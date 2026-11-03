@@ -44,7 +44,7 @@ Acceptance (Michael on the couch; Fable can also drive most of it over SSH from 
 | Config | One file `/etc/couch/couch.toml` (stdlib `tomllib`) | Host name, MAC, display mode, bitrate, tiles, nightly reboot time, optional ntfy URL. |
 | Health | `couch-doctor` CLI + read-only LAN page `http://<nuc>:7777/health` (JSON + tiny HTML) | Fable's daily audit on the media server can pull it; the TV shows a small badge when it is red. |
 | Updates | `unattended-upgrades` security-only; `couch-update` (manual/weekly) for Moonlight + Couch with rollback; optional nightly reboot 04:30 | Boring on purpose. |
-| Network | Both boxes WIRED, ideally through the same dumb gigabit switch, NOT across the Google Wifi mesh's wireless backhaul | The 1st-gen Google Wifi root already chokes on this media server's torrent traffic (memory google-wifi-root-bottleneck); a 30-60 Mbps low-latency game stream must not transit it wirelessly. `couch-doctor` measures ping jitter + a 10 s throughput probe to the workstation. |
+| Network | **At least one wireless hop is unavoidable** (workstation in the garage, NUC ~100 ft away in the living room, no cable run), so the stream is tuned to the MEASURED link, never assumed: `couch-doctor` measures ping jitter + a 10 s throughput probe to the workstation (iperf3 installed on the workstation by the kit, LAN-only), the launcher defaults to **1080p60 HEVC at ~15 Mbps** and exposes a quality ladder (720p60 10 Mbps -> 1080p60 15/20 -> 1440p60 30 -> 4K60 40) in config, and a link-quality badge appears when jitter > 10 ms or loss > 0.5%. | The 1st-gen Google Wifi mesh backhaul is the weak link (it already degrades under this media server's torrent load - memory google-wifi-root-bottleneck). Honest numbers: a 1st-gen Google Wifi hop typically gives 100-250 Mbps and 3-10 ms, with spikes to 50+ ms under load; 1080p60 at 15 Mbps survives that, 4K often will not. Hardware fixes are Michael's call (section 8). |
 
 ## 3. Architecture
 ```
@@ -126,7 +126,14 @@ TV (HDMI) <- NUC: Ubuntu 24.04 -------------------------------------------------
 - Xbox dongle on Linux (xone is out-of-tree): installer verifies after reboot; BT pairing path documented; a wired USB
   cable always works. If xone cannot be made reliable on this kernel, the dongle stays on the workstation and the NUC
   uses Bluetooth - the brief requires both paths tested in code.
-- Google Wifi mesh latency: wired-same-switch requirement + doctor measurement; otherwise expect stutter.
+- Google Wifi mesh latency (garage <-> living room, ~100 ft, no cable): the software answer is adaptive quality + the
+  doctor's measurement + a server-side "game mode" (follow-up: the launcher asks the media server's Cortex to drop qBit
+  to its alternate limits for the duration of a stream, so torrent traffic stops competing on the mesh). The hardware
+  answer, in order of preference: (1) MoCA 2.5 adapters if coax reaches both rooms (~1 Gbps, ~3 ms, the gold
+  standard; ~$150 a pair); (2) a dedicated point-to-point 5/6 GHz bridge pair between the rooms (~$100-200, 300-900
+  Mbps, 2-5 ms, immune to the mesh); (3) a WiFi 6E/7 mesh with a dedicated backhaul band replacing the Google Wifi
+  (already on the roadmap for Plex); (4) powerline as a last resort (unpredictable: 20-300 Mbps depending on the
+  wiring). Pick after `couch-doctor` has numbers from the current mesh.
 - HDR / 4K120: depends on NUC iGPU + TV; config exposes it, default 1080p60 (or 4K60 if decode caps say so).
 - Sunshine's apps.json format drifts between versions: the merge is schema-tolerant and keeps unknown keys; tests pin
   the current documented form.

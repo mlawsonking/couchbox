@@ -21,6 +21,11 @@ the game returns to the launcher; it keeps working for months with nobody touchi
 - Gamepad: **xone** DKMS (Xbox Wireless Adapter dongle) + Bluetooth (xpadneo) fallback + wired (in-kernel xpad). All
   three paths must be exercised in code and in `couch-doctor`.
 - Box art: Steam public CDN by appid (no key), fallback generated title cards. No keyed or metered service anywhere.
+- Network reality: the workstation is in the garage, the NUC ~100 ft away in the living room, no cable run - at least one
+  hop crosses a 1st-gen Google Wifi mesh that also carries a busy media server. So: default **1080p60 HEVC ~15 Mbps**, a
+  config quality ladder (720p60 10 -> 1080p60 15/20 -> 1440p60 30 -> 4K60 40 Mbps), `couch-doctor` measures jitter/loss/
+  throughput to the host (iperf3 on the workstation, installed LAN-only by the kit), and the launcher shows a
+  link-quality badge (jitter > 10 ms or loss > 0.5%). Never assume a wired path.
 - Hardware unknowns (NUC model, iGPU generation, TV caps) are NOT known yet: everything adapts at install time via
   `couch-doctor` (vainfo decode caps -> default display mode), nothing is hard-coded to a model.
 
@@ -80,6 +85,8 @@ the game returns to the launcher; it keeps working for months with nobody touchi
 - `Set-WakeOnLan.ps1 [-Apply]`: NIC "Wake on Magic Packet" + Fast Startup off; BIOS step documented, never attempted.
 - `Check-Sunshine.ps1`: doctor for that side (service, ports listening, firewall, apps.json valid, WoL property, GPU
   encoder present).
+- `Install-LinkProbe.ps1 [-Apply]`: iperf3 via winget as a scheduled task bound to the LAN interface, firewall rule for
+  TCP 5201 from the private LAN only, so `couch-doctor` can measure the garage-to-living-room path.
 - Tests: Pester (pwsh in CI) with fixture `.acf`/`.vdf`/`apps.json`; dry-run writes nothing; PS5.1 syntax lint
   (no `??`, `?.`, ternary, `-notlike` on arrays, no Unicode).
 
@@ -97,8 +104,8 @@ the game returns to the launcher; it keeps working for months with nobody touchi
    `couch-*` systemd units, the `getty@tty1` mask, unattended-upgrades config. `--dry-run` prints the plan; second run
    is a no-op; never formats or partitions anything (only `make-usb.sh`'s autoinstall does, and only with `--disk`).
 5. Workstation scripts: dry-run default, `-Apply` required, backups beside every touched file; touch ONLY Sunshine
-   (install/config/its firewall rules), the NIC WoL property and Fast Startup. Never Steam's files, other firewall
-   rules, Windows Update, or display settings.
+   (install/config/its firewall rules), the iperf3 probe (install, its one firewall rule, its task), the NIC WoL
+   property and Fast Startup. Never Steam's files, other firewall rules, Windows Update, or display settings.
 6. Dependencies: pygame-ce only (pinned + hashes). Daemon/doctor stdlib. No npm/Electron/snaps/flatpaks.
 7. Every failure state has a kid-readable screen AND a parent-readable detail line.
 8. No secrets, home IPs or MACs in the repo. Config examples use `AA:BB:CC:DD:EE:FF` / `gamepc.local`. CI greps for

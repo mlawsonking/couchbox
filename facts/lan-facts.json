@@ -4,7 +4,8 @@
   "lan": {
     "subnet": "192.168.86.0/24",
     "gateway": "192.168.86.1",
-    "router": "Google Wifi 1st gen mesh - latency for every client degrades under this LAN's torrent load; the NUC and the workstation must be WIRED, ideally on the same gigabit switch, not across the mesh's wireless backhaul",
+    "router": "Google Wifi 1st gen mesh - latency for every client degrades under this LAN's torrent load",
+    "topology": "workstation in the GARAGE, NUC ~100 ft away in the LIVING ROOM, no Ethernet run between them and none planned: at least one hop is the mesh's wireless backhaul. Design for a measured 1080p60 ~15 Mbps stream, not an assumed wired gigabit path",
     "ipv6": "broken on this mesh (no working path out) - do not depend on IPv6; prefer IPv4 everywhere",
     "dhcp": "all addresses are DHCP leases and DO change - never hard-code an IP; find the host by name/mDNS/ARP-by-MAC"
   },
