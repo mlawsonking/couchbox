@@ -1,0 +1,4 @@
+# CI / test-only tools. NOT installed on the NUC (the NUC venv holds pygame-ce only).
+pytest==8.3.3
+jsonschema==4.23.0
+PyYAML==6.0.2

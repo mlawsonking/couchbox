@@ -1,0 +1,19 @@
+# couch-firstboot: when install.sh ran inside the Ubuntu installer's chroot (autoinstall late-commands), the DKMS
+# build and service start are deferred to the first real boot. Re-running install.sh is idempotent; on success it
+# removes /var/lib/couch/firstboot-pending, so this unit never runs again.
+[Unit]
+Description=couchbox: finish install on first boot (DKMS build for the running kernel, start services)
+ConditionPathExists=/var/lib/couch/firstboot-pending
+Wants=network-online.target
+After=network-online.target
+Before=couch-kiosk.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/couch/src/installer/install.sh --from-firstboot
+RemainAfterExit=no
+TimeoutStartSec=30min
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

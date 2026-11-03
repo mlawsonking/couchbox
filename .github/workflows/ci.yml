@@ -1,0 +1,56 @@
+name: ci
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck yamllint
+      - name: secret gate
+        run: scripts/check-secrets.sh
+      - name: shellcheck
+        run: |
+          shellcheck -x installer/install.sh installer/make-usb.sh installer/autoinstall/disk-guard.sh couch/bin/kiosk \
+            scripts/*.sh tests/rehearsal/*.sh tests/fixtures/bin/* tests/fixtures/fake-moonlight.AppImage
+      - name: yamllint (rendered autoinstall + workflows)
+        run: |
+          COUCH_ADMIN_HASH='$6$ci$ci' installer/make-usb.sh --render-only /tmp/seed --disk only
+          yamllint -c .yamllint.yml /tmp/seed/user-data .github/workflows/ci.yml
+
+  bats:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q bats
+      - run: bats tests/bats
+
+  pytest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q tests
+
+  rehearsal:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [plain, systemd]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh rehearsal in ubuntu:24.04 (${{ matrix.mode }})
+        run: tests/rehearsal/rehearse.sh ${{ matrix.mode }}

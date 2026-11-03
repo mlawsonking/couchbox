@@ -1,0 +1,22 @@
+#!/bin/bash
+# /opt/couch/bin/kiosk - the program cage runs full-screen on the TV.
+# Phase 1 fallback: moonlight-qt's own gamepad-navigable GUI. Once the Couch launcher (pygame-ce) is installed and
+# its venv is healthy, it is preferred; if it is missing or fails to import, we fall back to moonlight-qt so the TV
+# always shows something that can start a stream.
+set -u
+COUCH_ROOT="${COUCH_ROOT:-/opt/couch}"
+LOG_DIR="${COUCH_LOG_DIR:-/var/log/couch}"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
+export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland,x11}"
+
+log() { printf '%s kiosk: %s\n' "$(date -Is)" "$*" >>"$LOG_DIR/kiosk.log" 2>/dev/null || true; }
+
+if [ -x "$COUCH_ROOT/venv/bin/python" ] && [ -d "$COUCH_ROOT/app/couch" ] && \
+   "$COUCH_ROOT/venv/bin/python" -c 'import pygame' >/dev/null 2>&1; then
+    log "starting Couch launcher"
+    cd "$COUCH_ROOT/app" || exit 1
+    exec "$COUCH_ROOT/venv/bin/python" -m couch.launcher
+fi
+
+log "launcher not available; starting moonlight-qt fallback GUI"
+exec "$COUCH_ROOT/bin/moonlight-qt"

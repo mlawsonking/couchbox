@@ -1,0 +1,4 @@
+#!/bin/sh
+# fake vainfo for tests: prints $COUCH_SYSROOT/vainfo.txt
+[ -f "$COUCH_SYSROOT/vainfo.txt" ] || { echo "vaInitialize failed" >&2; exit 1; }
+cat "$COUCH_SYSROOT/vainfo.txt"

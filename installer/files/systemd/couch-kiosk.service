@@ -1,0 +1,52 @@
+# couch-kiosk: cage (Wayland kiosk compositor) on tty1 running /opt/couch/bin/kiosk as the unprivileged "couch" user.
+# Installed by couchbox installer/install.sh. getty@tty1 is masked so there is never a login prompt on the TV.
+[Unit]
+Description=couchbox kiosk (cage -> /opt/couch/bin/kiosk on tty1)
+After=systemd-user-sessions.service plymouth-quit-wait.service systemd-logind.service
+After=couch-firstboot.service
+Conflicts=getty@tty1.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=couch
+Group=couch
+SupplementaryGroups=video input render audio
+WorkingDirectory=/var/lib/couch/home
+Environment=HOME=/var/lib/couch/home
+Environment=XDG_CONFIG_HOME=/var/lib/couch/home/.config
+Environment=COUCH_CONFIG=/etc/couch/couch.toml
+# -d: no client-side decorations; -s: allow VT switching for the admin. No cursor: cage hides it without a pointer.
+ExecStart=/usr/bin/cage -d -s -- /opt/couch/bin/kiosk
+Restart=always
+RestartSec=2
+# A logind session on seat0 gives the user DRM master + input device ACLs.
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+# Hardening that does not break DRM/input/audio access.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/couch /var/log/couch
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

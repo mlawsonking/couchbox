@@ -1,0 +1,51 @@
+#cloud-config
+# couchbox unattended Ubuntu Server 24.04 install. TEMPLATE: make-usb.sh fills the @@...@@ fields at USB build
+# time (target disk, admin user + password hash typed by Michael, SSH key from installer/authorized_keys, optional
+# Wi-Fi). Nothing secret is stored in the repo. The disk guard aborts the install rather than guess a disk.
+autoinstall:
+  version: 1
+  interactive-sections: []
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  timezone: "@@TIMEZONE@@"
+  source:
+    id: ubuntu-server-minimal
+  refresh-installer:
+    update: false
+  network:
+    version: 2
+    ethernets:
+      couch-wired:
+        match:
+          name: "e*"
+        dhcp4: true
+        dhcp6: false
+        optional: true
+@@WIFI_BLOCK@@
+  storage:
+    layout:
+      name: direct
+      match:
+@@DISK_MATCH@@
+  early-commands:
+    - [sh, /cdrom/couchbox/installer/autoinstall/disk-guard.sh, "@@DISK@@"]
+  identity:
+    hostname: "@@HOSTNAME@@"
+    username: "@@ADMIN_USER@@"
+    password: "@@ADMIN_HASH@@"
+  ssh:
+    install-server: true
+    allow-pw: false
+    # The console admin gets no SSH key: remote validation uses the key-only, no-sudo "couchadmin" user that
+    # install.sh creates from installer/authorized_keys.
+    authorized-keys: []
+  updates: security
+  packages:
+    - git
+    - curl
+  late-commands:
+    - mkdir -p /target/opt/couch
+    - cp -a /cdrom/couchbox /target/opt/couch/src
+    - curtin in-target --target=/target -- /opt/couch/src/installer/install.sh
+  shutdown: reboot

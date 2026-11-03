@@ -1,0 +1,9 @@
+#!/bin/sh
+# fake systemctl for tests: $COUCH_SYSROOT/systemctl.state = "<is-active> <is-enabled> <getty-state>"
+read -r active enabled getty <"$COUCH_SYSROOT/systemctl.state"
+case "$1 $2" in
+  "is-active "*) echo "$active"; [ "$active" = active ] ;;
+  "is-enabled getty@tty1.service") echo "$getty" ;;
+  "is-enabled "*) echo "$enabled"; [ "$enabled" = enabled ] ;;
+  *) echo "fake systemctl: unsupported $*" >&2; exit 1 ;;
+esac

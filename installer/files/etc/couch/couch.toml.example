@@ -1,0 +1,33 @@
+# /etc/couch/couch.toml - the ONLY place the workstation's name/MAC live (mode 0640, root:couch).
+# The installer copies this example once if the file is absent and never overwrites your edits.
+
+[host]
+name = "gamepc.local"          # workstation hostname or mDNS name (never an IP; DHCP leases change)
+mac = "AA:BB:CC:DD:EE:FF"      # workstation NIC MAC for Wake-on-LAN (placeholder)
+
+[stream]
+# auto = decode caps + measured link pick; or one of the ladder rungs below; or "custom"
+display_mode = "auto"
+# quality ladder rung used when display_mode = "auto" and no measurement exists yet
+default_rung = "1080p60-15"
+codec = "HEVC"                 # HEVC | H.264 | AV1 | auto
+custom_resolution = "1920x1080"
+custom_fps = 60
+custom_bitrate_kbps = 15000
+
+[pair]
+policy = "menu"                # menu = Pair is offered in the Start menu; "off" hides it
+
+[maintenance]
+nightly_reboot = "04:30"       # "" disables
+ntfy_url = ""                  # optional, e.g. https://ntfy.example/topic ; only POSTed when doctor is red
+
+[[tile]]
+name = "Steam Big Picture"
+app = "Steam Big Picture"      # exact Sunshine app name
+art = ""                       # path under /var/lib/couch/art, or "" for a generated card
+
+[[tile]]
+name = "Desktop"
+app = "Desktop"
+art = ""

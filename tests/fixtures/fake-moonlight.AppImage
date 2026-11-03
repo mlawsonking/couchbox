@@ -1,0 +1,19 @@
+#!/bin/sh
+# Fake moonlight-qt "AppImage" for tests. --appimage-extract creates squashfs-root/AppRun, a fake moonlight-qt that
+# appends its argv to $MOONLIGHT_ARGV_LOG (if set) and behaves per $FAKE_MOONLIGHT_MODE (ok|fail|hang).
+if [ "${1:-}" = "--appimage-extract" ]; then
+    mkdir -p squashfs-root
+    cat >squashfs-root/AppRun <<'APPRUN'
+#!/bin/sh
+[ -n "${MOONLIGHT_ARGV_LOG:-}" ] && printf '%s\n' "$*" >>"$MOONLIGHT_ARGV_LOG"
+case "${FAKE_MOONLIGHT_MODE:-ok}" in
+    fail) echo "fake moonlight: failing as asked" >&2; exit 1 ;;
+    hang) sleep 3600 ;;
+esac
+exit 0
+APPRUN
+    chmod +x squashfs-root/AppRun
+    exit 0
+fi
+echo "fake moonlight AppImage: only --appimage-extract is supported" >&2
+exit 2

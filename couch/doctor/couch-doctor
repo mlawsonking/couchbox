@@ -1,0 +1,276 @@
+#!/usr/bin/python3
+"""couch-doctor - read-only health matrix for the couchbox NUC (Python stdlib only).
+
+  couch-doctor [--json] [--sysroot DIR]
+
+v0 checks: display (DRM connectors), gamepad (the three driver paths + /dev/input + SDL when the launcher venv
+exists), decode caps (vainfo), services. Exit code: 0 green, 1 any yellow, 2 any red.
+Never changes anything. --sysroot points /sys, /proc, /dev and /etc lookups at a fixture tree (tests).
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+
+VERSION = "0"
+GREEN, YELLOW, RED, SKIP = "green", "yellow", "red", "skip"
+_RANK = {SKIP: 0, GREEN: 0, YELLOW: 1, RED: 2}
+
+# Xbox Wireless Adapter USB product ids (vendor 045e) handled by xone.
+DONGLE_PIDS = {"02e6", "02fe", "02f9", "091e"}
+
+SYSROOT = "/"
+
+
+def p(path: str) -> str:
+    """Map an absolute system path under --sysroot."""
+    return os.path.join(SYSROOT, path.lstrip("/"))
+
+
+def read(path: str, default: str = "") -> str:
+    try:
+        with open(p(path), encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return default
+
+
+def run(argv: list[str], timeout: float = 10.0) -> tuple[int, str]:
+    try:
+        cp = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+        return cp.returncode, (cp.stdout or "") + (cp.stderr or "")
+    except FileNotFoundError:
+        return 127, f"{argv[0]}: not installed"
+    except subprocess.TimeoutExpired:
+        return 124, f"{argv[0]}: timed out after {timeout:.0f}s"
+
+
+def result(name: str, status: str, summary: str, detail: dict | None = None) -> dict:
+    return {"check": name, "status": status, "summary": summary, "detail": detail or {}}
+
+
+# ------------------------------------------------------------------ display
+def check_display() -> dict:
+    connectors = []
+    for status_file in sorted(glob.glob(p("/sys/class/drm/card*-*/status"))):
+        d = os.path.dirname(status_file)
+        name = os.path.basename(d)
+        with open(status_file, encoding="utf-8") as fh:
+            st = fh.read().strip()
+        modes = []
+        try:
+            with open(os.path.join(d, "modes"), encoding="utf-8") as fh:
+                modes = [m.strip() for m in fh if m.strip()]
+        except OSError:
+            pass
+        connectors.append({"connector": name, "status": st, "preferred_mode": modes[0] if modes else None,
+                           "modes": modes[:8]})
+    connected = [c for c in connectors if c["status"] == "connected"]
+    if not connectors:
+        return result("display", RED, "no display hardware found (no DRM connectors)", {"connectors": []})
+    if not connected:
+        return result("display", RED, "no TV detected on any HDMI/DP port - is the TV on and the cable in?",
+                      {"connectors": connectors})
+    c = connected[0]
+    return result("display", GREEN, f"{c['connector']} connected, preferred {c['preferred_mode'] or 'unknown'}",
+                  {"connectors": connectors})
+
+
+# ------------------------------------------------------------------ gamepad
+def input_devices() -> list[dict]:
+    devs, cur = [], {}
+    for line in read("/proc/bus/input/devices").splitlines() + [""]:
+        if not line.strip():
+            if cur:
+                devs.append(cur)
+            cur = {}
+            continue
+        if line.startswith("N: Name="):
+            cur["name"] = line.split("=", 1)[1].strip().strip('"')
+        elif line.startswith("H: Handlers="):
+            cur["handlers"] = line.split("=", 1)[1].split()
+        elif line.startswith("I: "):
+            cur["id"] = dict(kv.split("=", 1) for kv in line[3:].split() if "=" in kv)
+    return devs
+
+
+def module_loaded(name: str) -> bool:
+    return os.path.isdir(p(f"/sys/module/{name}"))
+
+
+def usb_ids() -> set[tuple[str, str]]:
+    ids = set()
+    for d in glob.glob(p("/sys/bus/usb/devices/*")):
+        try:
+            with open(os.path.join(d, "idVendor"), encoding="utf-8") as v, \
+                    open(os.path.join(d, "idProduct"), encoding="utf-8") as pr:
+                ids.add((v.read().strip().lower(), pr.read().strip().lower()))
+        except OSError:
+            continue
+    return ids
+
+
+def sdl_controllers() -> dict:
+    py = p("/opt/couch/venv/bin/python")
+    if not os.path.exists(py):
+        return {"status": SKIP, "note": "launcher venv not installed yet (P2); SDL enumeration skipped"}
+    code = ("import os;os.environ['SDL_VIDEODRIVER']='dummy';import pygame;pygame.init();pygame.joystick.init();"
+            "import json;print(json.dumps([pygame.joystick.Joystick(i).get_name() "
+            "for i in range(pygame.joystick.get_count())]))")
+    rc, out = run([py, "-c", code], timeout=15)
+    if rc != 0:
+        return {"status": YELLOW, "note": f"SDL enumeration failed (rc {rc})", "output": out[-400:]}
+    try:
+        names = json.loads(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"status": YELLOW, "note": "SDL enumeration printed nothing parseable"}
+    return {"status": GREEN if names else YELLOW, "controllers": names}
+
+
+def check_gamepad() -> dict:
+    devs = input_devices()
+    pads = [d for d in devs if any(h.startswith("js") for h in d.get("handlers", []))]
+    usb = usb_ids()
+    dongle_present = any(v == "045e" and pid in DONGLE_PIDS for v, pid in usb)
+    hci = sorted(os.path.basename(x) for x in glob.glob(p("/sys/class/bluetooth/hci*")))
+    paths = {
+        "dongle": {"driver": "xone_dongle", "loaded": module_loaded("xone_dongle"), "adapter_plugged": dongle_present,
+                   "firmware": sorted(os.path.basename(f) for f in glob.glob(p("/lib/firmware/xone_dongle_*.bin")))},
+        "bluetooth": {"driver": "hid_xpadneo", "loaded": module_loaded("hid_xpadneo"), "adapters": hci},
+        "wired": {"driver": "xone_wired" if module_loaded("xone_wired") else "xpad",
+                  "loaded": module_loaded("xone_wired") or module_loaded("xpad")},
+    }
+    detail = {"paths": paths, "joysticks": [{"name": d.get("name"), "handlers": d.get("handlers")} for d in pads],
+              "sdl": sdl_controllers()}
+    problems = []
+    if dongle_present and not paths["dongle"]["loaded"]:
+        problems.append("Xbox adapter plugged in but xone_dongle is not loaded")
+    if dongle_present and not paths["dongle"]["firmware"]:
+        problems.append("Xbox adapter firmware missing")
+    if pads:
+        names = ", ".join(sorted({d.get("name") or "?" for d in pads}))
+        status = YELLOW if problems else GREEN
+        return result("gamepad", status, f"{len(pads)} gamepad(s): {names}" + (f"; {'; '.join(problems)}"
+                                                                              if problems else ""), detail)
+    if problems:
+        return result("gamepad", RED, "; ".join(problems), detail)
+    any_driver = paths["dongle"]["loaded"] or (paths["bluetooth"]["loaded"] and hci) or paths["wired"]["loaded"]
+    if not any_driver and not dongle_present:
+        return result("gamepad", YELLOW, "no gamepad connected and no gamepad driver loaded yet "
+                                         "(they load when a pad or the adapter is plugged in)", detail)
+    return result("gamepad", YELLOW, "no gamepad connected - turn the controller on (Xbox button)", detail)
+
+
+# ------------------------------------------------------------------ decode caps
+VAAPI_RE = re.compile(r"^\s*(VAProfile\w+)\s*:\s*(VAEntrypoint\w+)", re.M)
+
+
+def parse_vainfo(text: str) -> dict:
+    vld = sorted({prof for prof, ep in VAAPI_RE.findall(text) if ep == "VAEntrypointVLD"})
+    caps = {
+        "h264": any(x.startswith("VAProfileH264") for x in vld),
+        "hevc": "VAProfileHEVCMain" in vld,
+        "hevc10": "VAProfileHEVCMain10" in vld,
+        "av1": any(x.startswith("VAProfileAV1") for x in vld),
+    }
+    m = re.search(r"Driver version:\s*(.+)", text)
+    # Decode generation heuristic only bounds the mode; the measured network link decides the default rung.
+    if caps["av1"] or caps["hevc10"]:
+        ceiling = "4k60"
+    elif caps["hevc"] or caps["h264"]:
+        ceiling = "1080p60"
+    else:
+        ceiling = None
+    codec = "HEVC" if caps["hevc"] else ("H.264" if caps["h264"] else None)
+    return {"vld_profiles": vld, "caps": caps, "driver": m.group(1).strip() if m else None,
+            "decode_ceiling": ceiling, "recommended_codec": codec}
+
+
+def check_decode() -> dict:
+    nodes = sorted(glob.glob(p("/dev/dri/renderD*")))
+    if not nodes:
+        return result("decode", RED, "no GPU render node (/dev/dri/renderD*) - no hardware video decode", {})
+    rc, out = run(["vainfo", "--display", "drm", "--device", "/dev/dri/" + os.path.basename(nodes[0])])
+    info = parse_vainfo(out)
+    info["render_node"] = os.path.basename(nodes[0])
+    if rc != 0 and not info["vld_profiles"]:
+        info["output"] = out[-600:]
+        return result("decode", RED, f"vainfo failed (rc {rc}) - VA-API driver missing?", info)
+    if not (info["caps"]["hevc"] or info["caps"]["h264"]):
+        return result("decode", RED, "GPU has no H.264/HEVC hardware decode", info)
+    status = GREEN if info["caps"]["hevc"] else YELLOW
+    have = ", ".join(k.upper() for k, v in info["caps"].items() if v)
+    return result("decode", status, f"hardware decode: {have}; ceiling {info['decode_ceiling']}; "
+                                    f"codec {info['recommended_codec']}", info)
+
+
+# ------------------------------------------------------------------ services
+def check_services() -> dict:
+    detail = {}
+    bad = []
+    for unit in ("couch-kiosk.service",):
+        _, active = run(["systemctl", "is-active", unit])
+        _, enabled = run(["systemctl", "is-enabled", unit])
+        detail[unit] = {"active": active.strip(), "enabled": enabled.strip()}
+        if active.strip() != "active":
+            bad.append(f"{unit} {active.strip() or 'unknown'}")
+        if enabled.strip() != "enabled":
+            bad.append(f"{unit} not enabled")
+    _, getty = run(["systemctl", "is-enabled", "getty@tty1.service"])
+    detail["getty@tty1.service"] = getty.strip()
+    if getty.strip() != "masked":
+        bad.append("getty@tty1 not masked (login prompt may appear on the TV)")
+    pending = os.path.exists(p("/var/lib/couch/firstboot-pending"))
+    detail["firstboot_pending"] = pending
+    if pending:
+        bad.append("first-boot install not finished")
+    if bad:
+        return result("services", RED, "; ".join(bad), detail)
+    return result("services", GREEN, "kiosk running, tty1 login masked", detail)
+
+
+CHECKS = [check_display, check_gamepad, check_decode, check_services]
+
+
+def overall(results: list[dict]) -> str:
+    worst = max((_RANK[r["status"]] for r in results), default=0)
+    return {0: GREEN, 1: YELLOW, 2: RED}[worst]
+
+
+def run_all() -> dict:
+    results = []
+    for fn in CHECKS:
+        try:
+            results.append(fn())
+        except Exception as exc:  # a broken check must never hide the others
+            results.append(result(fn.__name__.replace("check_", ""), RED, f"check crashed: {exc!r}"))
+    return {"doctor_version": VERSION, "overall": overall(results), "checks": results}
+
+
+def render_text(report: dict) -> str:
+    marks = {GREEN: "[ OK ]", YELLOW: "[WARN]", RED: "[FAIL]", SKIP: "[SKIP]"}
+    lines = [f"couch-doctor v{report['doctor_version']}  overall: {report['overall'].upper()}"]
+    for r in report["checks"]:
+        lines.append(f"{marks[r['status']]} {r['check']:<10} {r['summary']}")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    global SYSROOT
+    ap = argparse.ArgumentParser(prog="couch-doctor", description="read-only couchbox health matrix")
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--sysroot", default=os.environ.get("COUCH_SYSROOT", "/"), help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+    SYSROOT = args.sysroot
+    report = run_all()
+    print(json.dumps(report, indent=2) if args.json else render_text(report))
+    return _RANK[report["overall"]]
+
+
+if __name__ == "__main__":
+    sys.exit(main())
