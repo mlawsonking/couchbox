@@ -1,0 +1,31 @@
+{
+  "_note": "Facts for the cloud session to READ. Nothing here goes into code; config examples use placeholders.",
+  "written": "2026-11-03",
+  "lan": {
+    "subnet": "192.168.86.0/24",
+    "gateway": "192.168.86.1",
+    "router": "Google Wifi 1st gen mesh - latency for every client degrades under this LAN's torrent load; the NUC and the workstation must be WIRED, ideally on the same gigabit switch, not across the mesh's wireless backhaul",
+    "ipv6": "broken on this mesh (no working path out) - do not depend on IPv6; prefer IPv4 everywhere",
+    "dhcp": "all addresses are DHCP leases and DO change - never hard-code an IP; find the host by name/mDNS/ARP-by-MAC"
+  },
+  "media_server": {
+    "role": "Windows media server (Plex, the Cortex dashboard on :8500, this brief's author runs there). It will SSH into the NUC to validate.",
+    "lan_ip_today": "192.168.86.248",
+    "plex": "http://192.168.86.248:32400 (optional future tile: Plex HTPC on the NUC - OUT OF SCOPE for v1)",
+    "ssh_public_key": "installer/authorized_keys in this repo (ed25519, generated on the media server)"
+  },
+  "workstation": {
+    "role": "Windows 11 gaming workstation with a discrete GPU - the Sunshine HOST. Model/GPU/NIC/MAC not yet recorded; Michael provides them when the kit is run.",
+    "gamepad_dongle": "Xbox-style gamepad with a USB dongle that works out of the box on this Windows 11 machine today; assumed to be the Microsoft Xbox Wireless Adapter (xone on Linux). Bluetooth fallback must exist.",
+    "powershell": "5.1 is the default shell there - every .ps1 must parse under 5.1 and be pure ASCII"
+  },
+  "nuc": {
+    "model": "UNKNOWN - Michael is buying/choosing; adapt at install time (vainfo decode caps -> default display mode)",
+    "tv_input": "one dedicated HDMI input on the living-room TV (same TV as the Roku 'MKUltra', LAN 192.168.86.33)"
+  },
+  "existing_conventions": {
+    "kid_readable_failure_screens": "every failure state shows kid words plus a parent detail line (rule inherited from the Spin to Watch project)",
+    "alerts": "Michael already receives ntfy + Discord alerts from the media server; the NUC may POST to an ntfy URL read from /etc/couch/couch.toml - the URL is never in the repo",
+    "no_metered_services": "no API keys, no paid APIs, no cloud dependencies at runtime"
+  }
+}
