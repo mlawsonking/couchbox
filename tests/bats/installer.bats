@@ -152,11 +152,21 @@ fake_launcher_root() { # $1 = exit code of the fake launcher
     [ "$output" = "LAUNCHER" ]
 }
 
-@test "couch-doctor: all green on a healthy fixture, exit 0" {
+@test "couch-doctor: fixture-controlled checks are green; output and exit code agree" {
     python3 "$REPO/tests/fixtures/make_sysroot.py" "$TMP/root" good
-    PATH="$REPO/tests/fixtures/bin:$PATH" COUCH_SYSROOT="$TMP/root" run "$REPO/couch/doctor/couch-doctor"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"overall: GREEN"* ]]
+    PATH="$REPO/tests/fixtures/bin:$PATH" COUCH_SYSROOT="$TMP/root" COUCH_CONFIG="$TMP/root/etc/couch/couch.toml" \
+        COUCH_MOONLIGHT="$REPO/tests/fixtures/bin/fake-moonlight-qt" FAKE_MOONLIGHT_MODE=list \
+        run "$REPO/couch/doctor/couch-doctor"
+    [[ "$output" == *"couch-doctor v1"* ]]
+    [[ "$output" == *"[ OK ] display"* && "$output" == *"[ OK ] gamepad"* && "$output" == *"[ OK ] decode"* ]]
+    [[ "$output" == *"[ OK ] network"* && "$output" == *"[ OK ] pairing"* ]]
+    # sunshine/disk depend on the machine running the test; the exit code must match the overall verdict
+    case "$output" in
+        *"overall: GREEN"*) [ "$status" -eq 0 ] ;;
+        *"overall: YELLOW"*) [ "$status" -eq 1 ] ;;
+        *"overall: RED"*) [ "$status" -eq 2 ] ;;
+        *) false ;;
+    esac
 }
 
 @test "couch-doctor: no TV -> red, exit 2, JSON parses" {
