@@ -55,3 +55,28 @@ jobs:
       - uses: actions/checkout@v4
       - name: install.sh rehearsal in ubuntu:24.04 (${{ matrix.mode }})
         run: tests/rehearsal/rehearse.sh ${{ matrix.mode }}
+
+  workstation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pester 5.6.1
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 5.6.1 -Force -Scope CurrentUser -SkipPublisherCheck
+      - name: PS 5.1 lint (ASCII, no BOM, no PS7-only syntax)
+        shell: pwsh
+        run: |
+          ./workstation/tests/Lint-PS51.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ./workstation/tests/Lint-PS51.ps1 -Path ./workstation/tests/lint-fixtures | Out-Null
+          if ($LASTEXITCODE -ne 1) { Write-Error 'lint did not catch the PS7-only fixture'; exit 1 }
+          exit 0
+      - name: Pester on fixtures (dry run writes nothing)
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion 5.6.1
+          $c = New-PesterConfiguration
+          $c.Run.Path = 'workstation/tests'
+          $c.Run.Exit = $true
+          $c.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $c

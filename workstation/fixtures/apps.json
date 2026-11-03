@@ -1,0 +1,19 @@
+{
+  "env": {
+    "PATH": "$(PATH);$(ProgramFiles(x86))\\Steam"
+  },
+  "custom-top-level": {"keep": "me"},
+  "apps": [
+    {
+      "name": "Desktop",
+      "image-path": "desktop.png",
+      "my-own-key": 42
+    },
+    {
+      "name": "Michael's Emulator",
+      "cmd": "C:\\Emu\\emu.exe",
+      "prep-cmd": [{"do": "nircmd setdisplay 1920 1080 32", "undo": "nircmd setdisplay 3840 2160 32", "elevated": true}],
+      "exclude-global-prep-cmd": "false"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+"AppState"
+{
+	"appid"		"504230"
+	"universe"		"1"
+	"name"		"Celeste"
+	"StateFlags"		"4"
+	"installdir"		"Celeste"
+	// comment lines are allowed in KeyValues
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}

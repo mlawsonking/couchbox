@@ -1,0 +1,24 @@
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"@STEAM@"
+		"label"		""
+		"contentid"		"1234567890"
+		"totalsize"		"0"
+		"apps"
+		{
+			"504230"		"1234"
+			"228980"		"5678"
+		}
+	}
+	"1"
+	{
+		"path"		"@LIB2@"
+		"label"		"Games"
+		"apps"
+		{
+			"367520"		"999"
+		}
+	}
+}

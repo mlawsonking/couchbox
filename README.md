@@ -27,6 +27,9 @@ couch/daemon/                 couch-daemon (stdlib): allow-listed actions on 127
 couch/doctor/couch-doctor     read-only health matrix v1 (stdlib Python), --json, --measure
 couch/bin/couch-update        update with automatic rollback; --import of the workstation's Steam library + art
 couch/bin/couch-maint         root timer: gamepad-driver check per kernel, nightly reboot window
+workstation/                  Windows kit (PowerShell 5.1, ASCII, dry run by default, -Apply to change):
+                                Setup-Sunshine.ps1, Export-SteamLibrary.ps1, Set-WakeOnLan.ps1, Check-Sunshine.ps1,
+                                Install-LinkProbe.ps1, CouchKit.psm1 (shared, mockable), tests/ (Pester + 5.1 lint)
 tests/                        bats, pytest, container rehearsal, fixtures, vendored subiquity autoinstall schema
 scripts/check-secrets.sh      repo gate: keys/tokens/passwords/MACs/home IPs
 ```
@@ -72,6 +75,11 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
 | Post-kernel-update driver check; nightly reboot window (skips while streaming, right after boot) | yes: pytest | a real kernel update with DKMS |
 | couch-update: rollback point, failed install or failed verification -> previous installer re-run; `--import` validates JSON, digits-only appids, JPEG magic | yes: pytest + rehearsal (`--status`, `--import`) | a real moonlight-qt version bump |
 | Daemon runs as `couch` with the target's stdlib python3, serves /health, enforces the allow-list | yes: container rehearsal | - |
+| Workstation kit: dry run writes nothing and calls nothing (every side effect is a mocked CouchKit wrapper); -Apply backs up, then changes | yes: Pester runs the real scripts against fixtures | Windows 11 with UAC, real winget/firewall/NIC cmdlets |
+| apps.json merge keeps every existing entry, unknown per-app and top-level keys; adds only missing names (case-insensitive); idempotent; written without a BOM | yes: Pester with a hand-made fixture (custom emulator entry, elevated prep-cmd, extra keys) | Sunshine actually loading it (targeted v2026.1103.23515) |
+| Steam library across all library folders (`libraryfolders.vdf`), installed = StateFlags bit 4, redistributables skipped, Steam files never written | yes: Pester with fixture `.vdf`/`.acf` (escaped quotes, comments, two libraries) | a real Steam install |
+| Only Sunshine's ports (TCP 47984/47989/48010, UDP 47998-48000/48002/48010) and one iperf3 rule (TCP 5201), all Private profile + LocalSubnet, group "couchbox" | yes: Pester asserts the exact rule calls | Windows Firewall |
+| PS 5.1 compatibility: ASCII only, no BOM, no `??` `?.` ternary `&&`/`||`, no 6+-only parameters, `ConvertTo-Json` always with `-Depth` | yes: AST lint under pwsh, proven to catch a fixture full of PS7-only code | parsing by real Windows PowerShell 5.1 |
 | Cold boot -> launcher on the TV, gamepad-navigable | - | yes (acceptance 1, 2) |
 
 ## Decisions made by the builder (open questions from BRIEF.md)
@@ -105,6 +113,19 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
   pet it; crashes are handled by `Restart=always` and the 3-strike launcher fallback.
 - **Display sleep:** no DPMS tool for cage is in Ubuntu's archive, so after 60 min the launcher shows black and calls
   `/opt/couch/bin/couch-display-power` only if someone installs one (needs the real TV to choose CEC vs. DPMS).
+- **Workstation kit details (P4):**
+  - Sunshine app forms follow the current docs and its shipped Windows `apps.json`: Desktop = `image-path` only;
+    Steam Big Picture = `cmd: steam://open/bigpicture` with `prep-cmd` undo `steam://close/bigpicture`,
+    `auto-detach`, `wait-all`; per game = `detached: ["steam://rungameid/<appid>"]`.
+  - Box art: Steam's CDN serves JPEG (`library_600x900.jpg`, Cloudflare host first, Akamai fallback); the NUC uses
+    the JPEGs; a PNG copy goes to `<Sunshine config>\couchbox-art` for Sunshine's own app images (converted with
+    System.Drawing, which ships with Windows PowerShell 5.1). Games without art get a generated card on the TV.
+  - Exporter is also dry-run by default, for consistency: it only ever READS Steam's files.
+  - Wake-on-LAN keeps the previous NIC/Fast Startup values in `wol-backup-<time>.json` beside the script (registry
+    and NIC settings are not files); the BIOS step is documented, never attempted. Wi-Fi adapters get a warning: most
+    cannot wake the PC, so wake works best with the workstation on a cable to its mesh point.
+  - iperf3 comes from winget id `ar51an.iPerf3`, runs as `LOCAL SERVICE` from a startup task; uninstall commands are
+    in the script header.
 - **Quality:** the hourly `doctor --measure` (skipped while streaming) runs a 10 s iperf3 probe to the workstation
   and records the highest ladder rung whose bitrate is at most half the measured throughput (one rung lower on a
   jittery or lossy link) in `/var/lib/couch/link.json`; `display_mode = "auto"` uses it, default 1080p60 15 Mbps.
@@ -125,5 +146,5 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
 - [x] P1 bootable kiosk with the moonlight-qt fallback (installer, autoinstall, doctor v0)
 - [x] P2 pygame-ce launcher with headless golden renders
 - [x] P3 daemon + self-healing
-- [ ] P4 workstation PowerShell kit
+- [x] P4 workstation PowerShell kit
 - [ ] P5 CI + RUNBOOK / TESTPLAN / FAILURE-SCREENS / PLAN-B-WINDOWS
