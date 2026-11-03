@@ -34,12 +34,19 @@ tests/                        bats, pytest, container rehearsal, fixtures, vendo
 scripts/check-secrets.sh      repo gate: keys/tokens/passwords/MACs/home IPs
 ```
 
-## Install (short form; docs/RUNBOOK.md arrives in P5)
+## Docs
 
-Either build a USB stick with `installer/make-usb.sh --iso <ubuntu-24.04-live-server-amd64.iso> --disk /dev/<nuc-disk>
---out couchbox.iso` (the NUC's disk is wiped; you type the console admin password, it is hashed into the image only),
-or install plain Ubuntu Server 24.04 and run `git clone <this repo> && sudo ./couchbox/installer/install.sh`.
-Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/couch/bin/couch-doctor` (or `--json`).
+- `docs/RUNBOOK.md`: workstation kit, USB install, first boot, pairing, adding games, re-pairing, every failure
+  screen, Fable's SSH validation, updates and rollback, gamepads.
+- `docs/TESTPLAN.md`: the 10 acceptance items as numbered couch steps with PASS/FAIL boxes.
+- `docs/FAILURE-SCREENS.md`: every failure screen (kid line, grown-up line, causes, fix), generated from the code.
+- `docs/PLAN-B-WINDOWS.md`: the Windows-kiosk fallback, documented, not built.
+
+## CI gates (`.github/workflows/ci.yml`, all must be green)
+
+lint (secret gate, shellcheck, yamllint of the rendered autoinstall), bats, pytest (state machine, input, config,
+renderer goldens + 4K frame budget, backend, daemon on a real HTTP server, doctor, maint/update, docs in sync),
+container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstation (PS 5.1 lint + Pester).
 
 ## Verified here vs. needs the real hardware
 
@@ -147,4 +154,4 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
 - [x] P2 pygame-ce launcher with headless golden renders
 - [x] P3 daemon + self-healing
 - [x] P4 workstation PowerShell kit
-- [ ] P5 CI + RUNBOOK / TESTPLAN / FAILURE-SCREENS / PLAN-B-WINDOWS
+- [x] P5 CI + RUNBOOK / TESTPLAN / FAILURE-SCREENS / PLAN-B-WINDOWS
