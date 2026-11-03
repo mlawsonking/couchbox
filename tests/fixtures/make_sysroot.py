@@ -18,6 +18,23 @@ VAINFO_H264 = """vainfo: Driver version: Intel i965 driver for Intel(R) Haswell 
       VAProfileH264Main               : VAEntrypointVLD
       VAProfileH264High               : VAEntrypointVLD
 """
+PING_GOOD = """PING 10.0.0.9 (10.0.0.9) 56(84) bytes of data.
+64 bytes from 10.0.0.9: icmp_seq=1 ttl=128 time=3.10 ms
+64 bytes from 10.0.0.9: icmp_seq=2 ttl=128 time=3.40 ms
+64 bytes from 10.0.0.9: icmp_seq=3 ttl=128 time=2.90 ms
+64 bytes from 10.0.0.9: icmp_seq=4 ttl=128 time=3.20 ms
+
+--- 10.0.0.9 ping statistics ---
+4 packets transmitted, 4 received, 0% packet loss, time 603ms
+"""
+PING_BAD = """64 bytes from 10.0.0.9: icmp_seq=1 ttl=128 time=4.0 ms
+64 bytes from 10.0.0.9: icmp_seq=2 ttl=128 time=48.0 ms
+64 bytes from 10.0.0.9: icmp_seq=3 ttl=128 time=5.0 ms
+64 bytes from 10.0.0.9: icmp_seq=5 ttl=128 time=61.0 ms
+
+--- 10.0.0.9 ping statistics ---
+5 packets transmitted, 4 received, 20% packet loss, time 803ms
+"""
 PAD = '''I: Bus=0003 Vendor=045e Product=0b12 Version=0509
 N: Name="Microsoft Xbox Controller"
 H: Handlers=event5 js0
@@ -54,6 +71,13 @@ def build(root, variant="good"):
         w(root, "lib/firmware/xone_dongle_02fe.bin", "fw")
     w(root, "sys/class/bluetooth/hci0/.keep")
     w(root, "systemctl.state", "active enabled masked\n")
+    w(root, "var/lib/couch/.keep")
+    w(root, "sys/class/net/lo/operstate", "unknown\n")
+    w(root, "sys/class/net/eno1/operstate", "up\n" if variant != "nonet" else "down\n")
+    w(root, "sys/class/net/wlp2s0/operstate", "down\n")
+    w(root, "sys/class/net/wlp2s0/wireless/.keep")
+    w(root, "ping.txt", PING_BAD if variant == "jittery" else PING_GOOD)
+    w(root, "etc/couch/couch.toml", '[host]\nname = "localhost"\nmac = "AA:BB:CC:DD:EE:FF"\n')
 
 
 if __name__ == "__main__":

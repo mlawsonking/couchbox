@@ -1,0 +1,203 @@
+#!/usr/bin/python3
+"""couch-update (root, stdlib): update Couch + moonlight-qt with automatic rollback, and import the Steam library.
+
+  couch-update --from DIR       DIR is a new checkout of this repo (git clone/pull by the admin). Snapshots the
+                                current source, runs DIR/installer/install.sh, verifies (launcher selftest +
+                                moonlight-qt runs). On any failure it re-runs the PREVIOUS installer = rollback.
+  couch-update --rollback       re-run the previous installer (restores the previous app, venv and moonlight link;
+                                moonlight version dirs are kept, so this needs no download)
+  couch-update --status         show the installed pins and the rollback point
+  couch-update --import SRC     SRC = the workstation exporter's output: a directory (or http(s) LAN URL) holding
+                                steam-library.json and art/<appid>.jpg. Copied once into /var/lib/couch; the
+                                launcher reads it from disk (no runtime network use).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+
+OPT = os.environ.get("COUCH_OPT", "/opt/couch")
+STATE = os.environ.get("COUCH_STATE_DIR", "/var/lib/couch")
+SRC = os.path.join(OPT, "src")
+ROLLBACK = os.path.join(OPT, "rollback", "src")
+MAX_ART = 5 * 1024 * 1024
+MAX_LIBRARY = 2 * 1024 * 1024
+
+
+def sh(argv: list[str], **kw) -> int:
+    print("+", " ".join(argv), flush=True)
+    return subprocess.run(argv, check=False, **kw).returncode
+
+
+def copy_tree(src: str, dst: str) -> None:
+    tmp = dst + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(src, tmp, symlinks=True, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+    shutil.rmtree(dst, ignore_errors=True)
+    os.replace(tmp, dst)
+
+
+def verify(runner=sh) -> bool:
+    ok = runner([os.path.join(OPT, "venv/bin/python"), "-m", "couch.launcher", "--selftest"],
+                cwd=os.path.join(OPT, "app"), env=dict(os.environ, SDL_VIDEODRIVER="dummy",
+                                                       SDL_AUDIODRIVER="dummy")) == 0
+    ok = ok and runner([os.path.join(OPT, "bin/moonlight-qt"), "--version"],
+                       env=dict(os.environ, QT_QPA_PLATFORM="offscreen"), stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL) == 0
+    return ok
+
+
+def update_from(new: str, runner=sh) -> int:
+    installer = os.path.join(new, "installer", "install.sh")
+    if not os.path.isfile(installer):
+        print(f"couch-update: {new} is not a couchbox checkout", file=sys.stderr)
+        return 2
+    if os.path.realpath(new) == os.path.realpath(SRC):
+        print("couch-update: --from must be a new checkout, not the installed copy", file=sys.stderr)
+        return 2
+    if os.path.isdir(SRC):
+        os.makedirs(os.path.dirname(ROLLBACK), exist_ok=True)
+        copy_tree(SRC, ROLLBACK)
+        print(f"couch-update: rollback point saved in {ROLLBACK}")
+    if runner([installer]) == 0 and verify(runner):
+        restart(runner)
+        print("couch-update: updated and verified")
+        return 0
+    print("couch-update: update failed verification - rolling back", file=sys.stderr)
+    rc = rollback(runner)
+    return 1 if rc == 0 else 3
+
+
+def rollback(runner=sh) -> int:
+    installer = os.path.join(ROLLBACK, "installer", "install.sh")
+    if not os.path.isfile(installer):
+        print("couch-update: no rollback point", file=sys.stderr)
+        return 2
+    staging = tempfile.mkdtemp(prefix="couch-rollback-")
+    try:
+        # Run the previous installer from a copy: it re-installs itself into /opt/couch/src.
+        work = os.path.join(staging, "src")
+        shutil.copytree(ROLLBACK, work, symlinks=True)
+        rc = runner([os.path.join(work, "installer", "install.sh")])
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    if rc == 0 and verify(runner):
+        restart(runner)
+        print("couch-update: rolled back")
+        return 0
+    return 1
+
+
+def restart(runner=sh) -> None:
+    for unit in ("couch-daemon.service", "couch-kiosk.service"):
+        runner(["systemctl", "try-restart", unit])
+
+
+# ------------------------------------------------------------------ library import
+def _fetch(src: str, rel: str, limit: int) -> bytes | None:
+    if src.startswith(("http://", "https://")):
+        url = urllib.parse.urljoin(src.rstrip("/") + "/", rel)
+        try:
+            with urllib.request.urlopen(url, timeout=20) as r:
+                data = r.read(limit + 1)
+        except OSError:
+            return None
+    else:
+        path = os.path.join(src, rel)
+        if not os.path.isfile(path) or os.path.getsize(path) > limit:
+            return None
+        with open(path, "rb") as fh:
+            data = fh.read(limit + 1)
+    return data if len(data) <= limit else None
+
+
+def import_library(src: str, state: str = STATE, uid_gid: tuple[int, int] | None = None) -> int:
+    raw = _fetch(src, "steam-library.json", MAX_LIBRARY)
+    if raw is None:
+        print(f"couch-update: no steam-library.json at {src}", file=sys.stderr)
+        return 2
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+        games = data["games"] if isinstance(data, dict) else data
+        assert isinstance(games, list)
+    except (ValueError, KeyError, AssertionError):
+        print("couch-update: steam-library.json is not valid", file=sys.stderr)
+        return 2
+    clean, art_ok = [], 0
+    art_dir = os.path.join(state, "art")
+    os.makedirs(art_dir, exist_ok=True)
+    for g in games:
+        if not isinstance(g, dict):
+            continue
+        appid, name = str(g.get("appid", "")), g.get("name")
+        if not re.fullmatch(r"\d{1,10}", appid) or not isinstance(name, str) or not name.strip():
+            continue
+        clean.append({"appid": int(appid), "name": name.strip()[:80], "installed": bool(g.get("installed", True))})
+        img = _fetch(src, f"art/{appid}.jpg", MAX_ART)
+        if img and img[:3] == b"\xff\xd8\xff":            # JPEG only (what the Steam CDN serves)
+            dest = os.path.join(art_dir, f"{appid}.jpg")
+            with open(dest + ".tmp", "wb") as fh:
+                fh.write(img)
+            os.chmod(dest + ".tmp", 0o644)
+            os.replace(dest + ".tmp", dest)
+            art_ok += 1
+    lib = os.path.join(state, "library.json")
+    with open(lib + ".tmp", "w", encoding="utf-8") as fh:
+        json.dump({"games": clean}, fh, indent=1)
+    os.chmod(lib + ".tmp", 0o644)
+    os.replace(lib + ".tmp", lib)
+    if uid_gid:
+        for f in [lib] + [os.path.join(art_dir, x) for x in os.listdir(art_dir)]:
+            os.chown(f, *uid_gid)
+    print(f"couch-update: imported {len(clean)} games ({art_ok} with box art) into {state}")
+    return 0
+
+
+def status() -> int:
+    pins = os.path.join(SRC, "installer", "pins.env")
+    cur = os.path.realpath(os.path.join(OPT, "moonlight", "current"))
+    print(f"installed source: {SRC}\nmoonlight-qt: {os.path.basename(cur)}")
+    if os.path.isfile(pins):
+        for line in open(pins, encoding="utf-8"):
+            if re.match(r"^(MOONLIGHT|XONE|XPADNEO)_VERSION=", line):
+                print("  " + line.strip())
+    print(f"rollback point: {ROLLBACK if os.path.isdir(ROLLBACK) else 'none'}")
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="couch-update")
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--from", dest="src", metavar="DIR")
+    g.add_argument("--rollback", action="store_true")
+    g.add_argument("--status", action="store_true")
+    g.add_argument("--import", dest="imp", metavar="DIR_OR_URL")
+    a = ap.parse_args(argv)
+    if a.status:
+        return status()
+    if os.geteuid() != 0:
+        print("couch-update: run as root", file=sys.stderr)
+        return 2
+    if a.imp:
+        import pwd
+        try:
+            pw = pwd.getpwnam("couch")
+            ids = (pw.pw_uid, pw.pw_gid)
+        except KeyError:
+            ids = None
+        return import_library(a.imp, uid_gid=ids)
+    if a.rollback:
+        return rollback()
+    return update_from(a.src)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

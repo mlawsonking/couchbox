@@ -1,0 +1,4 @@
+#!/bin/sh
+# fake iperf3 -J for tests: ${FAKE_IPERF_MBPS:-120} Mbps received
+bps=$(( ${FAKE_IPERF_MBPS:-120} * 1000000 ))
+printf '{"end":{"sum_received":{"bits_per_second":%s}}}\n' "$bps"

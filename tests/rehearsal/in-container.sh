@@ -65,6 +65,11 @@ check_mode /var/lib/couch/home 750 couch:couch
 check_mode /var/log/couch 775 root:couch
 check_mode /etc/systemd/system/couch-kiosk.service 644 root:root
 check_mode /etc/systemd/system/couch-firstboot.service 644 root:root
+check_mode /etc/systemd/system/couch-daemon.service 644 root:root
+check_mode /etc/systemd/system/couch-maint.timer 644 root:root
+check_mode /etc/kernel/postinst.d/zz-couch-xone-check 755 root:root
+check_mode /opt/couch/bin/couch-update 755 root:root
+check_mode /opt/couch/bin/couch-maint 755 root:root
 check_mode /etc/systemd/journald.conf.d/couch.conf 644 root:root
 check_mode /etc/apt/apt.conf.d/52couch-unattended-upgrades 644 root:root
 check_mode /etc/apt/apt.conf.d/21couch-auto-upgrades 644 root:root
@@ -80,6 +85,40 @@ pass "files, modes and owners"
 (cd /opt/couch/app && setpriv --reuid=couch --regid=couch --init-groups env HOME=/var/lib/couch/home \
     /opt/couch/venv/bin/python -m couch.launcher --selftest) || fail "launcher selftest failed as user couch"
 pass "venv has only pygame-ce; launcher renders every screen as user couch"
+
+echo "---- couch-daemon as user couch (stdlib python3 of the target), real HTTP"
+(cd /opt/couch/app && setpriv --reuid=couch --regid=couch --init-groups env HOME=/var/lib/couch/home \
+    COUCH_DAEMON_PORT=17777 python3 -m couch.daemon >/tmp/daemon.log 2>&1 &)
+for _ in $(seq 50); do
+    python3 -c 'import urllib.request;urllib.request.urlopen("http://127.0.0.1:17777/health",timeout=1)' 2>/dev/null && break
+    sleep 0.2
+done
+python3 - <<'PY' || fail "daemon checks failed: $(tail -5 /tmp/daemon.log)"
+import json, urllib.request, urllib.error
+def get(path, method="GET", hdr=True):
+    r = urllib.request.Request("http://127.0.0.1:17777" + path, method=method, data=b"{}" if method == "POST" else None,
+                               headers={"X-Couch": "1"} if hdr else {})
+    try:
+        with urllib.request.urlopen(r, timeout=5) as resp:
+            return resp.status, json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, None
+assert get("/health")[0] == 200
+assert get("/status")[0] == 200
+assert get("/exec", "POST")[0] == 404
+assert get("/wake", "POST", hdr=False)[0] == 403
+print("daemon ok")
+PY
+pkill -f "couch.daemon" || true
+pass "couch-daemon serves /health and enforces the allow-list in the target environment"
+
+/opt/couch/bin/couch-update --status >/dev/null || fail "couch-update --status"
+mkdir -p /tmp/lib/art && printf '{"games":[{"appid":504230,"name":"Celeste","installed":true}]}' >/tmp/lib/steam-library.json
+printf '\377\330\377\340fakejpeg' >/tmp/lib/art/504230.jpg
+/opt/couch/bin/couch-update --import /tmp/lib || fail "couch-update --import"
+[ "$(stat -c '%U' /var/lib/couch/art/504230.jpg)" = couch ] || fail "imported art not owned by couch"
+grep -q Celeste /var/lib/couch/library.json || fail "library not imported"
+pass "couch-update --status / --import"
 
 getent passwd couch | grep -q ':/usr/sbin/nologin$' || fail "couch has a login shell"
 for g in video input render audio; do id -nG couch | tr ' ' '\n' | grep -qx "$g" || fail "couch not in $g"; done
@@ -103,9 +142,13 @@ if [ "$MODE" = systemd ]; then
     [ "$(readlink /etc/systemd/system/getty@tty1.service)" = /dev/null ] || fail "getty@tty1 not masked"
     [ -L /etc/systemd/system/multi-user.target.wants/couch-kiosk.service ] || fail "kiosk not enabled"
     [ -L /etc/systemd/system/multi-user.target.wants/couch-firstboot.service ] || fail "firstboot not enabled"
+    [ -L /etc/systemd/system/multi-user.target.wants/couch-daemon.service ] || fail "daemon not enabled"
+    [ -L /etc/systemd/system/timers.target.wants/couch-maint.timer ] || fail "maint timer not enabled"
     [ -e /var/lib/couch/firstboot-pending ] || fail "firstboot marker missing (deferred mode)"
     grep -q 'deferred to first boot' /tmp/run1.log || fail "deferred mode not announced"
     systemd-analyze verify /etc/systemd/system/couch-kiosk.service /etc/systemd/system/couch-firstboot.service \
+        /etc/systemd/system/couch-daemon.service /etc/systemd/system/couch-maint.service \
+        /etc/systemd/system/couch-maint.timer \
         2>&1 | tee /tmp/verify.log
     if grep -E 'couch-' /tmp/verify.log | grep -viE 'Failed to (connect|create|get|resolve).*bus|dbus|No such file or directory.*bus'; then
         fail "systemd-analyze verify reported problems in couch units"

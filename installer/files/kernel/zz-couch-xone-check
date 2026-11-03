@@ -1,0 +1,5 @@
+#!/bin/sh
+# couchbox: after a new kernel is installed (and DKMS has rebuilt modules in its own earlier hook), verify the
+# gamepad drivers were built for it. Never fails the kernel install; a miss shows red in couch-doctor / on the TV.
+if [ -x /opt/couch/bin/couch-maint ]; then /opt/couch/bin/couch-maint --kernel "$1" || true; fi
+exit 0

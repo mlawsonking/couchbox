@@ -139,6 +139,7 @@ PACKAGES_BASE=(
     iputils-ping iperf3 iproute2
     curl ca-certificates git libarchive-tools
     unattended-upgrades
+    polkitd
 )
 PACKAGES_DKMS=(dkms linux-headers-generic build-essential)
 
@@ -300,12 +301,18 @@ ensure_files() {
     local f="$SCRIPT_DIR/files"
     ensure_file "$REPO_DIR/couch/bin/kiosk" "$COUCH_OPT/bin/kiosk" 0755 root:root
     ensure_file "$REPO_DIR/couch/doctor/couch-doctor" "$COUCH_OPT/bin/couch-doctor" 0755 root:root
+    ensure_file "$REPO_DIR/couch/bin/couch-maint" "$COUCH_OPT/bin/couch-maint" 0755 root:root
+    ensure_file "$REPO_DIR/couch/bin/couch-update" "$COUCH_OPT/bin/couch-update" 0755 root:root
     ensure_file "$f/etc/couch/couch.toml.example" "$COUCH_ETC/couch.toml.example" 0644 root:root
     ensure_file_once "$f/etc/couch/couch.toml.example" "$COUCH_ETC/couch.toml" 0640 root:couch
 
     section "systemd units and system config"
     ensure_file "$f/systemd/couch-kiosk.service" "$UNIT_DIR/couch-kiosk.service" 0644 root:root
     ensure_file "$f/systemd/couch-firstboot.service" "$UNIT_DIR/couch-firstboot.service" 0644 root:root
+    ensure_file "$f/systemd/couch-daemon.service" "$UNIT_DIR/couch-daemon.service" 0644 root:root
+    ensure_file "$f/systemd/couch-maint.service" "$UNIT_DIR/couch-maint.service" 0644 root:root
+    ensure_file "$f/systemd/couch-maint.timer" "$UNIT_DIR/couch-maint.timer" 0644 root:root
+    ensure_file "$f/kernel/zz-couch-xone-check" /etc/kernel/postinst.d/zz-couch-xone-check 0755 root:root
     if ! cmp -s "$f/journald/couch-journald.conf" /etc/systemd/journald.conf.d/couch.conf; then JOURNALD_CHANGED=1; fi
     ensure_file "$f/journald/couch-journald.conf" /etc/systemd/journald.conf.d/couch.conf 0644 root:root
     ensure_file "$f/apt/52couch-unattended-upgrades" /etc/apt/apt.conf.d/52couch-unattended-upgrades 0644 root:root
@@ -535,9 +542,11 @@ ensure_services() {
     else
         change "mask getty@tty1 (no login prompt on the TV)" systemctl mask getty@tty1.service
     fi
-    local u
-    for u in couch-kiosk.service couch-firstboot.service; do
-        if [ -e "/etc/systemd/system/multi-user.target.wants/$u" ]; then
+    local u target
+    for u in couch-kiosk.service couch-firstboot.service couch-daemon.service couch-maint.timer; do
+        target=multi-user.target
+        case "$u" in *.timer) target=timers.target ;; esac
+        if [ -e "/etc/systemd/system/$target.wants/$u" ]; then
             ok "$u enabled"
         else
             change "enable $u" systemctl enable "$u"
@@ -556,11 +565,13 @@ ensure_services() {
         change "first-boot install finished" rm -f "$COUCH_VAR/firstboot-pending"
         return
     fi
-    if systemctl is-active --quiet couch-kiosk.service; then
-        ok "couch-kiosk active"
-    else
-        change "start couch-kiosk" systemctl start couch-kiosk.service
-    fi
+    for u in couch-daemon.service couch-maint.timer couch-kiosk.service; do
+        if systemctl is-active --quiet "$u"; then
+            ok "$u active"
+        else
+            change "start $u" systemctl start "$u"
+        fi
+    done
 }
 
 # ---------------------------------------------------------------- main

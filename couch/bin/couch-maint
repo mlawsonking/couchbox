@@ -1,0 +1,123 @@
+#!/usr/bin/python3
+"""couch-maint (root, stdlib): run by couch-maint.timer every 5 minutes, at boot, and by the kernel post-install
+hook (/etc/kernel/postinst.d/zz-couch-xone-check).
+
+  couch-maint                  verify the gamepad drivers for the running kernel; reboot if the nightly window is due
+  couch-maint --kernel VER     verify the drivers were built for a just-installed kernel (flags red if not)
+
+Writes /var/lib/couch/xone-status.json, which couch-doctor (and through it the TV badge, /health, ntfy) reads."""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import glob
+import json
+import os
+import subprocess
+import sys
+
+try:
+    import tomllib
+except ImportError:  # pragma: no cover
+    tomllib = None
+
+STATE = os.environ.get("COUCH_STATE_DIR", "/var/lib/couch")
+CONFIG = os.environ.get("COUCH_CONFIG", "/etc/couch/couch.toml")
+WINDOW_MIN = 15
+MIN_UPTIME_S = 2 * 3600
+STREAM_FLAG_MAX_AGE_S = 6 * 3600
+
+
+def run(argv: list[str]) -> tuple[int, str]:
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False)
+        return p.returncode, p.stdout + p.stderr
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, str(exc)
+
+
+def xone_versions() -> dict[str, str]:
+    out = {}
+    for d in glob.glob("/usr/src/xone-*") + glob.glob("/usr/src/hid-xpadneo-*"):
+        name, _, ver = os.path.basename(d).rpartition("-")
+        out[name] = ver
+    return out
+
+
+def check_drivers(kernel: str, runner=run, versions=None) -> dict:
+    versions = xone_versions() if versions is None else versions
+    if not versions:
+        return {"ok": True, "kernel": kernel, "detail": "xone/xpadneo not installed (in-kernel xpad only)"}
+    missing = []
+    for mod, ver in sorted(versions.items()):
+        rc, out = runner(["dkms", "status", "-m", mod, "-v", ver, "-k", kernel])
+        if rc != 0 or "installed" not in out:
+            missing.append(f"{mod} {ver}")
+    if not missing and kernel == os.uname().release:
+        rc, out = runner(["modinfo", "-k", kernel, "xone_dongle"])
+        if rc != 0:
+            missing.append("xone_dongle module not found by modinfo")
+    return {"ok": not missing, "kernel": kernel, "versions": versions,
+            "detail": "; ".join(missing) if missing else "built"}
+
+
+def write_status(status: dict, state: str = STATE) -> None:
+    status = dict(status, checked=dt.datetime.now().isoformat(timespec="seconds"))
+    path = os.path.join(state, "xone-status.json")
+    with open(path + ".tmp", "w", encoding="utf-8") as fh:
+        json.dump(status, fh)
+    os.chmod(path + ".tmp", 0o644)
+    os.replace(path + ".tmp", path)
+
+
+def reboot_due(now: dt.datetime, hhmm: str, uptime_s: float, streaming_age_s: float | None) -> tuple[bool, str]:
+    if not hhmm:
+        return False, "nightly reboot disabled"
+    try:
+        h, m = (int(x) for x in hhmm.split(":"))
+    except ValueError:
+        return False, f"bad nightly_reboot {hhmm!r}"
+    start = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if not (start <= now < start + dt.timedelta(minutes=WINDOW_MIN)):
+        return False, "outside the window"
+    if uptime_s < MIN_UPTIME_S:
+        return False, "booted recently"
+    if streaming_age_s is not None and streaming_age_s < STREAM_FLAG_MAX_AGE_S:
+        return False, "a stream is running"
+    return True, "due"
+
+
+def nightly(now: dt.datetime | None = None, runner=run) -> str:
+    try:
+        with open(CONFIG, "rb") as fh:
+            cfg = tomllib.load(fh)
+        hhmm = str((cfg.get("maintenance") or {}).get("nightly_reboot", ""))
+    except (OSError, ValueError, AttributeError):
+        hhmm = "04:30"
+    with open("/proc/uptime", encoding="ascii") as fh:
+        uptime = float(fh.read().split()[0])
+    flag = os.path.join(STATE, "streaming")
+    age = (dt.datetime.now().timestamp() - os.path.getmtime(flag)) if os.path.exists(flag) else None
+    due, why = reboot_due(now or dt.datetime.now(), hhmm, uptime, age)
+    if due:
+        runner(["systemctl", "reboot"])
+    return why
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="couch-maint")
+    ap.add_argument("--kernel", help="check drivers for this (just installed) kernel only")
+    args = ap.parse_args(argv)
+    if args.kernel:
+        st = check_drivers(args.kernel)
+        write_status(st)
+        print(f"couch-maint: drivers for {args.kernel}: {st['detail']}")
+        return 0          # never fail a kernel install; the red flag is the signal
+    st = check_drivers(os.uname().release)
+    write_status(st)
+    print(f"couch-maint: drivers: {st['detail']}; nightly reboot: {nightly()}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

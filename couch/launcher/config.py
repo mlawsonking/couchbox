@@ -8,6 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 
 DEFAULT_PATH = "/etc/couch/couch.toml"
+LIBRARY_PATH = "/var/lib/couch/library.json"     # written by `couch-update --import` from the workstation exporter
+ART_DIR = "/var/lib/couch/art"
 
 # Quality ladder (GAMEPLAN section 2, Network). Name -> (resolution, fps, bitrate kbps).
 LADDER = {
@@ -65,7 +67,36 @@ def _default_tiles() -> list[Tile]:
     return [Tile("Steam Big Picture", "Steam Big Picture"), Tile("Desktop", "Desktop")]
 
 
-def load(path: str = DEFAULT_PATH) -> Config:
+def library_tiles(path: str = LIBRARY_PATH, art_dir: str = ART_DIR) -> list[Tile]:
+    """Per-game tiles from the imported Steam library (installed games only). Unreadable file -> none."""
+    import json
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    games = data.get("games", data) if isinstance(data, dict) else data
+    out = []
+    for g in games if isinstance(games, list) else []:
+        if not isinstance(g, dict) or not g.get("installed", True):
+            continue
+        name, appid = g.get("name"), str(g.get("appid", ""))
+        if not isinstance(name, str) or not name.strip() or not appid.isdigit():
+            continue
+        art = f"{appid}.jpg" if os.path.isfile(os.path.join(art_dir, f"{appid}.jpg")) else ""
+        out.append(Tile(name.strip()[:40], name.strip(), art))
+    return sorted(out, key=lambda t: t.name.lower())
+
+
+def load(path: str = DEFAULT_PATH, library: str | None = None) -> Config:
+    cfg = _load(path)
+    lib = library_tiles(library) if library else (library_tiles() if path == DEFAULT_PATH else [])
+    have = {t.app for t in cfg.tiles}
+    cfg.tiles = cfg.tiles + [t for t in lib if t.app not in have]
+    return cfg
+
+
+def _load(path: str) -> Config:
     cfg = Config(path=path, tiles=_default_tiles())
     try:
         with open(path, "rb") as fh:
@@ -177,20 +208,24 @@ def load(path: str = DEFAULT_PATH) -> Config:
 class Watcher:
     """Hot-reload: call poll() each second; returns a new Config when the file's mtime/size changed."""
 
-    def __init__(self, path: str = DEFAULT_PATH):
+    def __init__(self, path: str = DEFAULT_PATH, library: str | None = None):
         self.path = path
+        self.library = library or (LIBRARY_PATH if path == DEFAULT_PATH else None)
         self._sig = self._stat()
 
     def _stat(self):
-        try:
-            st = os.stat(self.path)
-            return (st.st_mtime_ns, st.st_size)
-        except OSError:
-            return None
+        sig = []
+        for f in (self.path, self.library):
+            try:
+                st = os.stat(f) if f else None
+                sig.append((st.st_mtime_ns, st.st_size) if st else None)
+            except OSError:
+                sig.append(None)
+        return tuple(sig)
 
     def poll(self) -> Config | None:
         sig = self._stat()
         if sig != self._sig:
             self._sig = sig
-            return load(self.path)
+            return load(self.path, self.library)
         return None

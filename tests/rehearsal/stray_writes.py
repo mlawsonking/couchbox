@@ -11,7 +11,7 @@ ALLOW = re.compile(r"^/(opt/couch(/|$)|etc/couch(/|$)|var/lib/couch(/|$)|var/log
                    r"|etc/systemd/system/couch-[^/]+$|etc/systemd/system/[^/]+\.wants/couch-[^/]+$"
                    r"|etc/systemd/system/getty@tty1\.service$|etc/systemd/journald\.conf\.d/couch\.conf$"
                    r"|etc/apt/apt\.conf\.d/(52couch-unattended-upgrades|21couch-auto-upgrades)$"
-                   r"|etc/modprobe\.d/couch-xone-blacklist\.conf$|usr/src/(xone|hid-xpadneo)-|lib/firmware/xone_dongle_)")
+                   r"|etc/modprobe\.d/couch-xone-blacklist\.conf$|etc/kernel/postinst\.d/zz-couch-xone-check$|usr/src/(xone|hid-xpadneo)-|lib/firmware/xone_dongle_)")
 # Written by apt/dpkg/maintainer scripts/user database updates as a consequence of installing the named packages.
 SYSTEM = re.compile(r"^/(var/lib/(apt|dpkg|systemd|ucf|python|pam|polkit-1|dbus|shells\.state|sgml-base|xml-core"
                     r"|bluetooth|avahi-autoipd|alsa|dhcp|private|fonts|vim)|var/cache|var/log/(apt|dpkg|alternatives"

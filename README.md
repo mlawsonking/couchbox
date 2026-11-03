@@ -23,7 +23,10 @@ couch/bin/kiosk               what cage runs on the TV: the Couch launcher, fall
 couch/launcher/               the 10-foot launcher (pygame-ce): config, state machine, input, renderer, backend
 couch/net.py                  WoL magic packet, IPv4 resolve, Sunshine port probe (stdlib; shared with the daemon)
 couch/requirements.lock       pygame-ce 2.5.2, hash-pinned: the only pip dependency, in /opt/couch/venv
-couch/doctor/couch-doctor     read-only health matrix (stdlib Python), --json
+couch/daemon/                 couch-daemon (stdlib): allow-listed actions on 127.0.0.1:7777, read-only /health
+couch/doctor/couch-doctor     read-only health matrix v1 (stdlib Python), --json, --measure
+couch/bin/couch-update        update with automatic rollback; --import of the workstation's Steam library + art
+couch/bin/couch-maint         root timer: gamepad-driver check per kernel, nightly reboot window
 tests/                        bats, pytest, container rehearsal, fixtures, vendored subiquity autoinstall schema
 scripts/check-secrets.sh      repo gate: keys/tokens/passwords/MACs/home IPs
 ```
@@ -59,6 +62,16 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
 | Bad config (syntax error, wrong types, bad MAC, IP instead of name, art URLs) never crashes; hot reload | yes: pytest | - |
 | venv holds only pygame-ce, from the hash-pinned lock; the launcher renders every screen as user `couch` in Ubuntu 24.04 | yes: container rehearsal (`--selftest`) | under cage on real DRM (Wayland first, XWayland fallback) |
 | Launcher crash loop -> moonlight-qt GUI fallback, then retry | yes: bats | - |
+| Daemon allow-list: only the listed actions, anything else 404; actions loopback-only; LAN gets /health and / only; `X-Couch` header required; body size cap | yes: pytest on a real `ThreadingHTTPServer`, including requests from this machine's real non-loopback address | - |
+| WoL packet bytes exact, only ever to the configured MAC (a MAC in the request body is ignored) | yes | the workstation actually waking (NIC + BIOS + Fast Startup, acceptance 3) |
+| `stream` only for apps `moonlight-qt list` returned (mock binary records argv); measured quality rung applied | yes | real `moonlight-qt list` output format (parser accepts plain lines and CSV) |
+| Host discovery: name/mDNS -> ARP by MAC -> last-known IP cache | yes: pytest | router reboot / new leases (acceptance 7) |
+| Remote validation path: `POST /stream {launch:true}` drives the launcher's normal state machine | yes: real daemon + DaemonBackend + App | on the TV |
+| Watchdog (`sd_notify` READY/WATCHDOG), ntfy POST only on transition to red, health.json for the TV badge | yes: pytest (real AF_UNIX notify socket) | systemd actually restarting a wedged daemon |
+| doctor v1 matrix: network (wired/wireless, ping jitter/loss, 10 s iperf3 -> recommended rung), Sunshine, pairing, services, drivers, disk, last 3 streams | yes: fixture sysroots + fake ping/iperf3/moonlight | real numbers over the garage-to-living-room mesh hop |
+| Post-kernel-update driver check; nightly reboot window (skips while streaming, right after boot) | yes: pytest | a real kernel update with DKMS |
+| couch-update: rollback point, failed install or failed verification -> previous installer re-run; `--import` validates JSON, digits-only appids, JPEG magic | yes: pytest + rehearsal (`--status`, `--import`) | a real moonlight-qt version bump |
+| Daemon runs as `couch` with the target's stdlib python3, serves /health, enforces the allow-list | yes: container rehearsal | - |
 | Cold boot -> launcher on the TV, gamepad-navigable | - | yes (acceptance 1, 2) |
 
 ## Decisions made by the builder (open questions from BRIEF.md)
@@ -79,8 +92,22 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
   calls `/opt/couch/bin/couch-display-power off` if present (the DPMS hook lands with the daemon in P3). The first
   button press only wakes the screen; it never also launches a game.
 - **Font:** pygame's bundled font, so golden renders are identical everywhere and nothing extra is installed.
-- **Before the daemon exists (P2):** the launcher sends WoL and runs moonlight-qt itself; "Restart the box" restarts
-  the kiosk. With couch-daemon installed (P3) the launcher uses it for both.
+- **Launcher vs. daemon split (P3):** the daemon is the gate (WoL to the configured MAC only, `stream` only for apps
+  from `moonlight-qt list`, host discovery, doctor/health/ntfy loop) and runs as the unprivileged `couch` user; the
+  launcher still runs the moonlight-qt child so it stays inside the cage session. Daemon `stream`/`quit`/`pair`/
+  `restart` from loopback (e.g. Fable over SSH) queue a request the launcher picks up within 1 s, so remote tests go
+  through exactly the same state machine as the gamepad. Without the daemon the launcher falls back to sending WoL
+  and running moonlight-qt itself.
+- **Restart the box:** the launcher holds the active logind session on seat0, so polkit (`polkitd`, installed) lets
+  it `systemctl reboot` without any sudo rule. The daemon never needs root.
+- **Watchdog:** `couch-daemon` is `Type=notify` with `WatchdogSec=30` and pets the watchdog only while both its HTTP
+  and background threads are alive. The kiosk has no watchdog: when it falls back to moonlight-qt's GUI nothing could
+  pet it; crashes are handled by `Restart=always` and the 3-strike launcher fallback.
+- **Display sleep:** no DPMS tool for cage is in Ubuntu's archive, so after 60 min the launcher shows black and calls
+  `/opt/couch/bin/couch-display-power` only if someone installs one (needs the real TV to choose CEC vs. DPMS).
+- **Quality:** the hourly `doctor --measure` (skipped while streaming) runs a 10 s iperf3 probe to the workstation
+  and records the highest ladder rung whose bitrate is at most half the measured throughput (one rung lower on a
+  jittery or lossy link) in `/var/lib/couch/link.json`; `display_mode = "auto"` uses it, default 1080p60 15 Mbps.
 - **Wired gamepads and xone:** xone blacklists the in-kernel `xpad` (they conflict over Xbox One/Series pads), so
   with xone installed wired Xbox One/Series pads are served by `xone_wired`; `xpad` serves wired pads only when xone
   is not installed (`--no-dkms`). Xbox 360 wired pads would need `xpad-noone` (not installed; documented).
@@ -97,6 +124,6 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
 
 - [x] P1 bootable kiosk with the moonlight-qt fallback (installer, autoinstall, doctor v0)
 - [x] P2 pygame-ce launcher with headless golden renders
-- [ ] P3 daemon + self-healing
+- [x] P3 daemon + self-healing
 - [ ] P4 workstation PowerShell kit
 - [ ] P5 CI + RUNBOOK / TESTPLAN / FAILURE-SCREENS / PLAN-B-WINDOWS

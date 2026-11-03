@@ -1,0 +1,3 @@
+#!/bin/sh
+# fake ping for tests: prints $COUCH_SYSROOT/ping.txt
+cat "$COUCH_SYSROOT/ping.txt"

@@ -3,7 +3,10 @@
 # $FAKE_MOONLIGHT_MODE: ok (exit 0) | fail (exit 1) | hang (until killed) | notpaired (exit 1 + message) |
 # slow (exit 0 after 1 s) | list (prints $FAKE_MOONLIGHT_APPS: newline-separated app names).
 [ -n "${MOONLIGHT_ARGV_LOG:-}" ] && printf '%s\n' "$*" >>"$MOONLIGHT_ARGV_LOG"
-case "${FAKE_MOONLIGHT_MODE:-ok}" in
+mode="${FAKE_MOONLIGHT_MODE:-ok}"
+# `list` can be given its own behaviour (FAKE_LIST_MODE) so a test can hang the stream but still list apps.
+if [ "${1:-}" = list ] && [ -n "${FAKE_LIST_MODE:-}" ]; then mode="$FAKE_LIST_MODE"; fi
+case "$mode" in
     fail) echo "fake moonlight: stream failed" >&2; exit 1 ;;
     hang) trap '' TERM; while :; do sleep 1; done ;;
     notpaired) echo "Error: Computer is not paired" >&2; exit 1 ;;

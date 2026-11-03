@@ -1,0 +1,11 @@
+# couch-maint: verify gamepad drivers for the running kernel; nightly reboot when due (config maintenance.nightly_reboot).
+[Unit]
+Description=couchbox maintenance (driver check, nightly reboot window)
+After=couch-firstboot.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/couch/bin/couch-maint
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes

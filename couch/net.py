@@ -52,3 +52,46 @@ def tcp_probe(ip: str, port: int = SUNSHINE_HTTP_PORT, timeout: float = 1.0) -> 
         return "refused"
     except OSError:
         return "timeout"
+
+
+def arp_lookup(mac: str, arp_path: str = "/proc/net/arp") -> str | None:
+    """IPv4 for a MAC from the kernel ARP/neighbour table (only finds hosts we've talked to recently)."""
+    want = mac.lower().replace("-", ":")
+    try:
+        with open(arp_path, encoding="ascii", errors="replace") as fh:
+            next(fh, None)
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 4 and parts[3].lower() == want and parts[2] != "0x0":
+                    return parts[0]
+    except OSError:
+        pass
+    return None
+
+
+def discover(host: str, mac: str, cache_path: str | None = None, resolve=None, arp=None) -> tuple[str | None, str]:
+    """Find the workstation without a fixed IP: (1) host name / mDNS, (2) ARP table by MAC, (3) last-known IP.
+    Returns (ip, method). A successful lookup refreshes the cache."""
+    import json
+    resolve = resolve or resolve4
+    arp = arp or arp_lookup
+    ip = resolve(host) if host else None
+    method = "name"
+    if not ip and mac:
+        ip, method = arp(mac), "arp"
+    if ip and cache_path:
+        try:
+            with open(cache_path, "w", encoding="utf-8") as fh:
+                json.dump({"host": host, "ip": ip, "method": method}, fh)
+        except OSError:
+            pass
+        return ip, method
+    if not ip and cache_path:
+        try:
+            with open(cache_path, encoding="utf-8") as fh:
+                d = json.load(fh)
+            if d.get("host") == host and d.get("ip"):
+                return d["ip"], "cache"
+        except (OSError, ValueError):
+            pass
+    return ip, (method if ip else "none")

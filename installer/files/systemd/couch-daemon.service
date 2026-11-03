@@ -1,0 +1,45 @@
+# couch-daemon: allow-listed actions on 127.0.0.1:7777, read-only /health on the LAN, doctor + ntfy loop.
+[Unit]
+Description=couchbox daemon (wake / apps / stream allow-list, health)
+Wants=network-online.target
+After=network-online.target couch-firstboot.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=couch
+Group=couch
+SupplementaryGroups=video render input
+WorkingDirectory=/opt/couch/app
+Environment=HOME=/var/lib/couch/home
+Environment=XDG_CONFIG_HOME=/var/lib/couch/home/.config
+Environment=QT_QPA_PLATFORM=offscreen
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m couch.daemon
+Restart=always
+RestartSec=3
+WatchdogSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/couch /var/log/couch
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=no
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_RAW
+AmbientCapabilities=CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

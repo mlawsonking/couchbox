@@ -1,0 +1,4 @@
+#!/bin/sh
+# fake couch-doctor --json for daemon tests: overall = ${FAKE_DOCTOR:-green}
+o="${FAKE_DOCTOR:-green}"
+printf '{"doctor_version":"1","overall":"%s","checks":[{"check":"network","status":"%s","summary":"x","detail":{"link_bad":true}}]}\n' "$o" "$o"

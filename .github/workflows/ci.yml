@@ -21,6 +21,7 @@ jobs:
       - name: shellcheck
         run: |
           shellcheck -x installer/install.sh installer/make-usb.sh installer/autoinstall/disk-guard.sh couch/bin/kiosk \
+            installer/files/kernel/zz-couch-xone-check \
             scripts/*.sh tests/rehearsal/*.sh tests/fixtures/bin/* tests/fixtures/fake-moonlight.AppImage
       - name: yamllint (rendered autoinstall + workflows)
         run: |

@@ -175,6 +175,24 @@ class App:
             notice=("Settings problem: " + self.cfg.error) if self.cfg.error else "",
         )
 
+    def handle_pending(self, p: dict | None, now: float) -> None:
+        """A request queued on couch-daemon (e.g. by remote validation over SSH) - same paths as the gamepad."""
+        if not p:
+            return
+        action = p.get("action")
+        log.info("daemon request: %s", p)
+        self.last_input = now
+        self.dim = 0.0
+        self.menu_open = False
+        if action == "stream" and isinstance(p.get("app"), str):
+            self.m.launch(p["app"], now)
+        elif action == "quit":
+            self.m.force_quit(now)
+        elif action == "pair":
+            self.m.pair(now)
+        elif action == "restart":
+            self.b.restart_box()
+
     def refresh_health(self, path: str = HEALTH_FILE) -> None:
         """couch-daemon (P3) writes the doctor's verdict here; absent file = assume green."""
         try:
@@ -262,6 +280,8 @@ def main(config_path: str = DEFAULT_PATH) -> int:
                     log.info("config reloaded%s", f" with problems: {new.error}" if new.error else "")
                     app.apply_config(new)
                 app.refresh_health()
+                if hasattr(backend, "pending"):
+                    app.handle_pending(backend.pending(), now)
             dirty = renderer.draw(screen, app.view(now))
             pygame.display.update(dirty)
             clock.tick(10 if app.m.state == S.STREAMING else 30)
