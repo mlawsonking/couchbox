@@ -87,6 +87,16 @@ the game returns to the launcher; it keeps working for months with nobody touchi
   encoder present).
 - `Install-LinkProbe.ps1 [-Apply]`: iperf3 via winget as a scheduled task bound to the LAN interface, firewall rule for
   TCP 5201 from the private LAN only, so `couch-doctor` can measure the garage-to-living-room path.
+- `Set-StreamDisplay.ps1 do|undo`: the host's PRIMARY monitor is a 3440x1440 ultrawide and Sunshine captures the primary,
+  so a 16:9 TV would be letterboxed. Ship a Sunshine **global prep-cmd** pair (`do` = switch the primary to the stream
+  resolution/refresh passed by Moonlight via Sunshine's `SUNSHINE_CLIENT_WIDTH/HEIGHT/FPS` env vars, `undo` = restore the
+  saved mode) using `ChangeDisplaySettingsEx` via Add-Type P/Invoke, idempotent, with the saved mode in a state file and a
+  safety restore on service start. Pester-test the mode selection and state handling; the P/Invoke call itself is
+  hardware-only (say so). Document the virtual-display-driver alternative in the RUNBOOK but do not install one.
+- Facts already known about the host (facts/lan-facts.json "workstation"): Sunshine 2026.516.x already installed and
+  running with an EMPTY sunshine.conf and two existing apps ("Desktop", "Steam Big Picture") - the merge keeps both;
+  Steam has two library folders (28 manifests incl. tools); the NIC currently links at 100 Mbps - cap the default
+  bitrate ladder at 50 Mbps and let the doctor report the link speed.
 - Tests: Pester (pwsh in CI) with fixture `.acf`/`.vdf`/`apps.json`; dry-run writes nothing; PS5.1 syntax lint
   (no `??`, `?.`, ternary, `-notlike` on arrays, no Unicode).
 

@@ -16,9 +16,19 @@
     "ssh_public_key": "installer/authorized_keys in this repo (ed25519, generated on the media server)"
   },
   "workstation": {
-    "role": "Windows 11 gaming workstation with a discrete GPU - the Sunshine HOST. Model/GPU/NIC/MAC not yet recorded; Michael provides them when the kit is run.",
-    "gamepad_dongle": "Xbox-style gamepad with a USB dongle that works out of the box on this Windows 11 machine today; assumed to be the Microsoft Xbox Wireless Adapter (xone on Linux). Bluetooth fallback must exist.",
-    "powershell": "5.1 is the default shell there - every .ps1 must parse under 5.1 and be pure ASCII"
+    "role": "Windows 11 Pro gaming workstation - the Sunshine HOST. Facts below were read on the machine itself on 2026-11-03 by a Claude session running there (read-only).",
+    "hostname": "BOBBO",
+    "os": "Windows 11 Pro build 26200; PowerShell 5.1 present (pwsh 7 also installed - still target 5.1, pure ASCII)",
+    "hardware": "AMD Ryzen 7 5800X, 64 GB DDR4-3200, NVIDIA GeForce RTX 4080 SUPER 16 GB (NVENC HEVC + AV1 capable)",
+    "network": "WIRED Realtek PCIe GbE, but the link negotiates at 100 Mbps (cable suspected, unfixed as of 2026-11-03) -> keep stream bitrate <= 50 Mbps until fixed; LAN IPv4 today 192.168.86.45 (DHCP); MAC not yet collected; whether it plugs into a mesh puck or the root is unknown",
+    "display": "PRIMARY is a 3440x1440 ultrawide. Sunshine config is all defaults = captures the primary -> a 16:9 TV gets letterboxed. The kit MUST handle this: a Sunshine prep-cmd (do/undo) that switches the primary to the stream resolution and restores it, and/or a documented virtual display driver option. A 'Virtual Desktop Monitor' PnP device in Error state exists (from the Virtual Desktop VR app, SteamVR installed) - it is NOT a Sunshine IDD; do not reuse it",
+    "sunshine": "installed, version 2026.516.143833, service SunshineService running (Automatic); config C:\\Program Files\\Sunshine\\config; sunshine.conf is EMPTY (all defaults); apps.json has exactly two entries: 'Desktop' (no cmd) and 'Steam Big Picture' (cmd steam://open/bigpicture), no prep/detached; ports 47984/47989/47990/48010 listen on 0.0.0.0; web UI password set; pairing state unknown (state file last written 2026-05-28, probably never paired)",
+    "moonlight_on_workstation": "not installed",
+    "steam": "C:\\Program Files (x86)\\Steam (client 2.10.91.91); library folders: the Steam dir (5 manifests) + Z:\\SteamLibrary (23) = 28 manifests incl. redistributables/tools",
+    "wake_on_lan": "UNKNOWN (NIC magic-packet setting, Fast Startup, BIOS) - Michael runs the kit's -WhatIf probe himself",
+    "gamepad_dongle": "model/VID:PID not yet collected; the Xbox-style gamepad works out of the box on this Windows 11 machine; assumed Microsoft Xbox Wireless Adapter (xone on Linux). Bluetooth fallback must exist.",
+    "stability": "10 bugchecks since 2026-07 with memory-corruption signatures (owner informed) - the launcher must treat a host that vanishes mid-stream as a normal case, not an exception path",
+    "powershell": "5.1 is the target - every .ps1 must parse under 5.1 and be pure ASCII"
   },
   "nuc": {
     "model": "UNKNOWN - Michael is buying/choosing; adapt at install time (vainfo decode caps -> default display mode)",
