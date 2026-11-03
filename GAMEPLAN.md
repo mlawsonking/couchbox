@@ -39,7 +39,7 @@ Acceptance (Michael on the couch; Fable can also drive most of it over SSH from 
 | Launcher | **"Couch" - Python 3.12 + pygame-ce (SDL2)**, runs full-screen under cage | SDL2 owns gamepad handling (built-in controller DB, hot-plug, Xbox dongle via xone/xpad, Bluetooth via xpadneo) - no browser, no Electron, no snap-Chromium-under-Wayland pain. Headless-renderable (SDL dummy driver) so the cloud can golden-screenshot every screen at 1080p and 2160p. |
 | Streaming engine | **moonlight-qt** (pinned AppImage + sha256, updated only by `couch-update` with rollback) driven by its CLI: `moonlight-qt stream <host> "<app>" --quit-after` | Mature, hardware-decoded, handles pairing/certs; `--quit-after` returns control to the launcher. Phase 1 is literally `cage moonlight-qt` so there is a working fallback before the launcher exists. |
 | Workstation side | PowerShell 5.1, pure ASCII, `-WhatIf`-style dry run by default, `-Apply` to change | Installs/configures Sunshine (winget `LizardByte.Sunshine`), builds the apps list from the installed Steam library, enables Wake-on-LAN, opens only Sunshine's firewall ports. Michael runs it himself (his machine, his UAC). |
-| Gamepad on Linux | **xone** (DKMS, Xbox Wireless Adapter dongle) installed by the installer, **Bluetooth (xpadneo) as fallback**, wired xpad always | The dongle is a Microsoft proprietary radio; xone is the maintained driver. DKMS rebuilds on kernel updates and the post-update hook VERIFIES the module loaded, alerting if not. |
+| Gamepad on Linux | **Generic HID gamepad + SDL2 controller DB** as the primary path (corrected 11-03: the dongle is a generic 2.4 GHz receiver, likely ACRUX 1A34:F517, not Microsoft's adapter); one-time first-run button-mapping screen writes an SDL mapping line to /etc/couch/gamepads.txt; udev rule for the couch user; xone (Microsoft adapter) and xpadneo (Bluetooth) as optional installer extras; wired always works | Generic receivers enumerate as plain HID/XInput-class gamepads that the kernel already handles; SDL maps known ones from its database and the mapping screen covers unknown ones. No out-of-tree driver on the critical path. |
 | Box art | From Steam's public CDN by appid (no API key) via the workstation exporter; fallback = generated title cards | No metered or keyed service anywhere. |
 | Config | One file `/etc/couch/couch.toml` (stdlib `tomllib`) | Host name, MAC, display mode, bitrate, tiles, nightly reboot time, optional ntfy URL. |
 | Health | `couch-doctor` CLI + read-only LAN page `http://<nuc>:7777/health` (JSON + tiny HTML) | Fable's daily audit on the media server can pull it; the TV shows a small badge when it is red. |
@@ -123,9 +123,9 @@ TV (HDMI) <- NUC: Ubuntu 24.04 -------------------------------------------------
 - **M4:** couch acceptance run with `docs/TESTPLAN.md`.
 
 ## 8. Risks and the planned answer
-- Xbox dongle on Linux (xone is out-of-tree): installer verifies after reboot; BT pairing path documented; a wired USB
-  cable always works. If xone cannot be made reliable on this kernel, the dongle stays on the workstation and the NUC
-  uses Bluetooth - the brief requires both paths tested in code.
+- Gamepad dongle on Linux: it is a generic 2.4 GHz receiver (good: no out-of-tree driver needed); the risk is an
+  unknown SDL mapping, answered by the first-run mapping screen + the doctor printing the device GUID. xone/xpadneo
+  are optional extras only. A wired USB cable always works.
 - Google Wifi mesh latency (garage <-> living room, ~100 ft, no cable): the software answer is adaptive quality + the
   doctor's measurement + a server-side "game mode" (follow-up: the launcher asks the media server's Cortex to drop qBit
   to its alternate limits for the duration of a stream, so torrent traffic stops competing on the mesh). The hardware

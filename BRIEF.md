@@ -18,8 +18,16 @@ the game returns to the launcher; it keeps working for months with nobody touchi
   the fallback before the launcher exists.
 - Daemon: Python stdlib only. Actions on 127.0.0.1:7777 (allow-list), `/health` read-only on the LAN.
 - Workstation kit: PowerShell **5.1-compatible, pure ASCII**, dry-run by default, `-Apply` to change. Michael runs it.
-- Gamepad: **xone** DKMS (Xbox Wireless Adapter dongle) + Bluetooth (xpadneo) fallback + wired (in-kernel xpad). All
-  three paths must be exercised in code and in `couch-doctor`.
+- Gamepad (corrected 2026-11-03): the dongle is a **generic 2.4 GHz gamepad receiver** (likely ACRUX 1A34:F517, "Xbox
+  style" layout), NOT Microsoft's adapter. Primary path = the kernel's generic HID gamepad support + **SDL2's controller
+  database**, with these requirements: (a) `couch-doctor` prints every /dev/input device with its SDL GUID, name and
+  whether SDL has a mapping; (b) an unmapped device gets a one-time, PIN-free **button-mapping screen** on first run
+  only (press A, B, X, Y, D-pad, sticks, Start, Back as prompted) that writes an `SDL_GAMECONTROLLERCONFIG` line to
+  `/etc/couch/gamepads.txt`, which is loaded on every start - after that the screen is reachable only from the
+  PIN-gated menu; (c) a udev rule granting the `couch` user access to hidraw/input devices; (d) hot-plug and
+  controller-off/on without restart. Keep xone (Microsoft adapter) and xpadneo (Bluetooth) as optional installer
+  extras (`--with-xone`, `--with-xpadneo`), not defaults; wired USB (in-kernel xpad / hid-generic) always works. All
+  paths exercised in code (synthetic SDL devices) and in `couch-doctor`.
 - Box art: Steam public CDN by appid (no key), fallback generated title cards. No keyed or metered service anywhere.
 - Network reality: the workstation is in the garage, the NUC ~100 ft away in the living room, no cable run - at least one
   hop crosses a 1st-gen Google Wifi mesh that also carries a busy media server. So: default **1080p60 HEVC ~15 Mbps**, a
@@ -95,8 +103,9 @@ the game returns to the launcher; it keeps working for months with nobody touchi
   hardware-only (say so). Document the virtual-display-driver alternative in the RUNBOOK but do not install one.
 - Facts already known about the host (facts/lan-facts.json "workstation"): Sunshine 2026.516.x already installed and
   running with an EMPTY sunshine.conf and two existing apps ("Desktop", "Steam Big Picture") - the merge keeps both;
-  Steam has two library folders (28 manifests incl. tools); the NIC currently links at 100 Mbps - cap the default
-  bitrate ladder at 50 Mbps and let the doctor report the link speed.
+  Steam has two library folders (28 manifests incl. tools); the host NIC links at 1 Gbps (an earlier read saw 100 Mbps
+  from a Realtek downshift feature) - no host-side cap, the ladder is governed by the measured path, and the doctor
+  reports the link speed.
 - Tests: Pester (pwsh in CI) with fixture `.acf`/`.vdf`/`apps.json`; dry-run writes nothing; PS5.1 syntax lint
   (no `??`, `?.`, ternary, `-notlike` on arrays, no Unicode).
 
