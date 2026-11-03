@@ -19,7 +19,10 @@ installer/pins.env            pinned moonlight-qt AppImage (sha256), xone + xpad
 installer/make-usb.sh         stock 24.04 live-server ISO -> unattended couchbox installer ISO (--disk required)
 installer/autoinstall/        user-data template + disk-guard.sh (refuses to guess a disk)
 installer/files/              systemd units, journald cap, unattended-upgrades (security only), couch.toml example
-couch/bin/kiosk               what cage runs on the TV (P1: moonlight-qt's own GUI; later the Couch launcher)
+couch/bin/kiosk               what cage runs on the TV: the Couch launcher, falling back to moonlight-qt's GUI
+couch/launcher/               the 10-foot launcher (pygame-ce): config, state machine, input, renderer, backend
+couch/net.py                  WoL magic packet, IPv4 resolve, Sunshine port probe (stdlib; shared with the daemon)
+couch/requirements.lock       pygame-ce 2.5.2, hash-pinned: the only pip dependency, in /opt/couch/venv
 couch/doctor/couch-doctor     read-only health matrix (stdlib Python), --json
 tests/                        bats, pytest, container rehearsal, fixtures, vendored subiquity autoinstall schema
 scripts/check-secrets.sh      repo gate: keys/tokens/passwords/MACs/home IPs
@@ -48,7 +51,15 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
 | disk guard refuses ambiguity | yes: bats with a fake `lsblk` | the NUC's real `lsblk` output |
 | xone / xpadneo DKMS build + dongle firmware | pins verified (commit + firmware sha256); `--no-dkms` in CI | DKMS build on the NUC kernel, dongle pairing, BT pairing |
 | couch-doctor v0 matrix (display, gamepad x3 paths, decode caps, services) | yes: pytest + bats on fixture sysroots (good + 5 failure variants) | real DRM connectors, real vainfo, real pads |
-| Cold boot -> moonlight-qt GUI on the TV, gamepad-navigable | - | yes (acceptance 1, 2) |
+| Launcher state machine: every transition and every timeout (wake 120 s, Sunshine 60 s, 3 strikes, host gone 30 s, pair 180 s) | yes: pytest, plus a test asserting the full edge set is covered | real timings against the real workstation (acceptance 3: <= 90 s asleep, <= 10 s awake) |
+| Gamepad mapping (D-pad/stick/A/B/Start, Guide held 3 s, two pads, raw-joystick fallback, keyboard/mouse ignored) | yes: synthetic SDL events, including through the real SDL event queue | the dongle/BT/wired pads' actual SDL mappings; Guide visible while moonlight has focus (`SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS`) |
+| Every screen renders (HOME, WAKING, CONNECTING, STREAMING, LOST, PAIR, MENU + attract) | yes: golden PNGs at 1920x1080 and 3840x2160, pixel-diffed | how it looks on the TV from the couch |
+| Frame budget < 8 ms at 4K on CPU | yes: p95 of steady-state frames per screen (actual: < 1 ms on CI CPUs) | the NUC's CPU |
+| moonlight-qt child supervision (argv, exit codes, not-paired detection, a hung child that ignores SIGTERM is killed and reaped in < 5 s) | yes: a fake moonlight-qt CLI | real moonlight-qt exit codes/messages (the not-paired text match is a guess at its wording) |
+| Bad config (syntax error, wrong types, bad MAC, IP instead of name, art URLs) never crashes; hot reload | yes: pytest | - |
+| venv holds only pygame-ce, from the hash-pinned lock; the launcher renders every screen as user `couch` in Ubuntu 24.04 | yes: container rehearsal (`--selftest`) | under cage on real DRM (Wayland first, XWayland fallback) |
+| Launcher crash loop -> moonlight-qt GUI fallback, then retry | yes: bats | - |
+| Cold boot -> launcher on the TV, gamepad-navigable | - | yes (acceptance 1, 2) |
 
 ## Decisions made by the builder (open questions from BRIEF.md)
 
@@ -59,7 +70,17 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
 - **Child process vs. seat handover:** moonlight-qt runs as a **child of the launcher inside the same cage session**
   (cage shows the newest toplevel full-screen; when the child exits the launcher is on top again). No seat/VT
   handover, so there is never a moment where the TV shows a console.
-- **Sounds / palette / attract mode:** decided and documented with the launcher in P2.
+- **Palette:** near-black navy background, white text, and Okabe-Ito colour-blind-safe hues (yellow focus ring,
+  bluish-green OK, orange warning, vermillion error). State is never shown by colour alone: every badge has a word
+  and a shape (dot = fine, triangle = attention). Text is at least 26 px at 1080p and scales with the TV.
+- **Sounds:** five short, quiet sine blips (move, select, back, error, ready) synthesised at start-up by
+  `couch/launcher/sounds.py`; no audio files ship, no third-party assets. No sound card = silent, never a crash.
+- **Attract mode:** after 10 min without input on HOME/menu the screen dims to 40%; after 60 min it goes black and
+  calls `/opt/couch/bin/couch-display-power off` if present (the DPMS hook lands with the daemon in P3). The first
+  button press only wakes the screen; it never also launches a game.
+- **Font:** pygame's bundled font, so golden renders are identical everywhere and nothing extra is installed.
+- **Before the daemon exists (P2):** the launcher sends WoL and runs moonlight-qt itself; "Restart the box" restarts
+  the kiosk. With couch-daemon installed (P3) the launcher uses it for both.
 - **Wired gamepads and xone:** xone blacklists the in-kernel `xpad` (they conflict over Xbox One/Series pads), so
   with xone installed wired Xbox One/Series pads are served by `xone_wired`; `xpad` serves wired pads only when xone
   is not installed (`--no-dkms`). Xbox 360 wired pads would need `xpad-noone` (not installed; documented).
@@ -75,7 +96,7 @@ Run `sudo installer/install.sh --dry-run` first to see the plan. Health: `/opt/c
 ## Status by phase
 
 - [x] P1 bootable kiosk with the moonlight-qt fallback (installer, autoinstall, doctor v0)
-- [ ] P2 pygame-ce launcher with headless golden renders
+- [x] P2 pygame-ce launcher with headless golden renders
 - [ ] P3 daemon + self-healing
 - [ ] P4 workstation PowerShell kit
 - [ ] P5 CI + RUNBOOK / TESTPLAN / FAILURE-SCREENS / PLAN-B-WINDOWS

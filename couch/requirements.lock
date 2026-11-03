@@ -1,0 +1,4 @@
+# The ONLY pip dependency on the NUC (BRIEF.md guardrail 6). Installed with --require-hashes --no-deps into
+# /opt/couch/venv on Ubuntu 24.04 (CPython 3.12, x86_64).
+pygame-ce==2.5.2 \
+    --hash=sha256:e457343c1916c8e9655263d692150edee237b6041ec61758338294d6b3db9e85

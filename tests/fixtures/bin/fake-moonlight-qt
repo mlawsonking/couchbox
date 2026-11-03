@@ -1,0 +1,13 @@
+#!/bin/sh
+# Fake moonlight-qt CLI for tests: records argv (one line per call) to $MOONLIGHT_ARGV_LOG and behaves per
+# $FAKE_MOONLIGHT_MODE: ok (exit 0) | fail (exit 1) | hang (until killed) | notpaired (exit 1 + message) |
+# slow (exit 0 after 1 s) | list (prints $FAKE_MOONLIGHT_APPS: newline-separated app names).
+[ -n "${MOONLIGHT_ARGV_LOG:-}" ] && printf '%s\n' "$*" >>"$MOONLIGHT_ARGV_LOG"
+case "${FAKE_MOONLIGHT_MODE:-ok}" in
+    fail) echo "fake moonlight: stream failed" >&2; exit 1 ;;
+    hang) trap '' TERM; while :; do sleep 1; done ;;
+    notpaired) echo "Error: Computer is not paired" >&2; exit 1 ;;
+    slow) sleep 1; exit 0 ;;
+    list) printf "%s\n" "${FAKE_MOONLIGHT_APPS:-Desktop}"; exit 0 ;;
+    *) exit 0 ;;
+esac

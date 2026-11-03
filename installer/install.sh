@@ -260,6 +260,7 @@ ensure_layout() {
     ensure_dir "$COUCH_OPT" 0755 root:root
     ensure_dir "$COUCH_OPT/bin" 0755 root:root
     ensure_dir "$COUCH_OPT/moonlight" 0755 root:root
+    ensure_dir "$COUCH_OPT/app" 0755 root:root
     ensure_dir "$COUCH_ETC" 0750 root:couch
     ensure_dir "$COUCH_VAR" 0755 couch:couch
     ensure_dir "$COUCH_VAR/home" 0750 couch:couch
@@ -280,7 +281,7 @@ ensure_source_copy() {
 }
 
 tree_hash() {
-    (cd "$1" && find . -path ./.git -prune -o -type f -print0 | LC_ALL=C sort -z |
+    (cd "$1" && find . \( -path ./.git -o -name __pycache__ -o -name .pytest_cache \) -prune -o -type f -print0 | LC_ALL=C sort -z |
         xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
 }
 
@@ -288,7 +289,7 @@ copy_tree() {
     local tmp="$2.new"
     rm -rf "$tmp"
     mkdir -p "$tmp"
-    (cd "$1" && tar --exclude=./.git -cf - .) | (cd "$tmp" && tar -xf -)
+    (cd "$1" && tar --exclude=./.git --exclude=__pycache__ --exclude=.pytest_cache -cf - .) | (cd "$tmp" && tar -xf -)
     chown -R root:root "$tmp"
     rm -rf "$2"
     mv "$tmp" "$2"
@@ -377,6 +378,42 @@ ensure_moonlight() {
     write_moonlight_wrapper "$tmpw"
     ensure_file "$tmpw" "$wrapper" 0755 root:root
     rm -f "$tmpw"
+}
+
+# ---------------------------------------------------------------- launcher (pygame-ce venv + app)
+lock_sha() { sha256_of "$REPO_DIR/couch/requirements.lock"; }
+
+build_venv() {
+    # A venv embeds its own path, so it is built in place; while it is missing or broken the kiosk falls back to
+    # moonlight-qt's GUI (couch/bin/kiosk), so the TV is never empty.
+    local venv="$COUCH_OPT/venv"
+    rm -rf "$venv"
+    python3 -m venv "$venv"
+    if ! "$venv/bin/pip" install --quiet --disable-pip-version-check --no-cache-dir --require-hashes --no-deps \
+        --only-binary=:all: -r "$REPO_DIR/couch/requirements.lock" >>"$LOG_FILE" 2>&1 ||
+        ! "$venv/bin/python" -c 'import pygame' >/dev/null 2>&1; then
+        rm -rf "$venv"
+        die "pip install of the hash-pinned pygame-ce failed (see $LOG_FILE)"
+    fi
+    lock_sha >"$venv/.couch-lock-sha256"
+}
+
+ensure_launcher() {
+    section "Couch launcher (pygame-ce venv + app)"
+    local venv="$COUCH_OPT/venv"
+    if [ -x "$venv/bin/python" ] && [ "$(cat "$venv/.couch-lock-sha256" 2>/dev/null || true)" = "$(lock_sha)" ]; then
+        ok "$venv matches couch/requirements.lock"
+    else
+        change "create $venv with the hash-pinned pygame-ce (only pip dependency)" build_venv
+    fi
+    local a b
+    a="$(tree_hash "$REPO_DIR/couch")"
+    b="$( [ -d "$COUCH_OPT/app/couch" ] && tree_hash "$COUCH_OPT/app/couch" || echo none)"
+    if [ "$a" = "$b" ]; then
+        ok "$COUCH_OPT/app/couch up to date"
+    else
+        change "install the Couch app into $COUCH_OPT/app/couch" copy_tree "$REPO_DIR/couch" "$COUCH_OPT/app/couch"
+    fi
 }
 
 # ---------------------------------------------------------------- gamepad drivers (DKMS)
@@ -537,6 +574,7 @@ main() {
     ensure_source_copy
     ensure_files
     ensure_moonlight
+    ensure_launcher
     ensure_gamepad_drivers
     ensure_services
     section "summary"

@@ -13,5 +13,9 @@ PROXY_ARGS=()
 for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; do
     if [ -n "${!v:-}" ]; then PROXY_ARGS+=(-e "$v=${!v}"); fi
 done
+# A TLS-intercepting proxy (development sandboxes) needs its CA inside the container for pip.
+if [ -n "${PIP_CERT:-}" ] && [ -f "$PIP_CERT" ]; then
+    PROXY_ARGS+=(-v "$PIP_CERT:/etc/couch-test-ca.crt:ro" -e PIP_CERT=/etc/couch-test-ca.crt)
+fi
 exec docker run --rm --network host "${PROXY_ARGS[@]}" -v "$REPO:/src:ro" -e MODE="$MODE" "$IMAGE" \
     bash /src/tests/rehearsal/in-container.sh

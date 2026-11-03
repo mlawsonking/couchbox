@@ -126,6 +126,32 @@ fake_lsblk() { # writes a fake lsblk printing $1 lines
     grep -q 'moonlight-qt fallback' "$TMP/log/kiosk.log"
 }
 
+fake_launcher_root() { # $1 = exit code of the fake launcher
+    mkdir -p "$TMP/opt/bin" "$TMP/opt/venv/bin" "$TMP/opt/app/couch" "$TMP/log" "$TMP/state"
+    printf '#!/bin/sh\necho "MOONLIGHT $*"\n' >"$TMP/opt/bin/moonlight-qt"
+    printf '#!/bin/sh\n[ "$1" = "-c" ] && exit 0\necho LAUNCHER; exit %s\n' "$1" >"$TMP/opt/venv/bin/python"
+    chmod +x "$TMP/opt/bin/moonlight-qt" "$TMP/opt/venv/bin/python"
+}
+
+@test "kiosk prefers the launcher when the venv works" {
+    fake_launcher_root 0
+    COUCH_ROOT="$TMP/opt" COUCH_LOG_DIR="$TMP/log" COUCH_STATE_DIR="$TMP/state" run "$REPO/couch/bin/kiosk"
+    [ "$status" -eq 0 ]
+    [ "$output" = "LAUNCHER" ]
+}
+
+@test "kiosk falls back to moonlight-qt after 3 quick launcher crashes, then retries the launcher" {
+    fake_launcher_root 1
+    for i in 1 2 3; do
+        COUCH_ROOT="$TMP/opt" COUCH_LOG_DIR="$TMP/log" COUCH_STATE_DIR="$TMP/state" run "$REPO/couch/bin/kiosk"
+        [ "$output" = "LAUNCHER" ]
+    done
+    COUCH_ROOT="$TMP/opt" COUCH_LOG_DIR="$TMP/log" COUCH_STATE_DIR="$TMP/state" run "$REPO/couch/bin/kiosk"
+    [[ "$output" == "MOONLIGHT"* ]]
+    COUCH_ROOT="$TMP/opt" COUCH_LOG_DIR="$TMP/log" COUCH_STATE_DIR="$TMP/state" run "$REPO/couch/bin/kiosk"
+    [ "$output" = "LAUNCHER" ]
+}
+
 @test "couch-doctor: all green on a healthy fixture, exit 0" {
     python3 "$REPO/tests/fixtures/make_sysroot.py" "$TMP/root" good
     PATH="$REPO/tests/fixtures/bin:$PATH" COUCH_SYSROOT="$TMP/root" run "$REPO/couch/doctor/couch-doctor"

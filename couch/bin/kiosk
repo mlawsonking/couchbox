@@ -1,22 +1,43 @@
 #!/bin/bash
 # /opt/couch/bin/kiosk - the program cage runs full-screen on the TV.
-# Phase 1 fallback: moonlight-qt's own gamepad-navigable GUI. Once the Couch launcher (pygame-ce) is installed and
-# its venv is healthy, it is preferred; if it is missing or fails to import, we fall back to moonlight-qt so the TV
-# always shows something that can start a stream.
+# Prefers the Couch launcher (pygame-ce). If the launcher is missing, cannot import pygame, or has crashed 3 times
+# in a row within a minute of starting, falls back to moonlight-qt's own gamepad-navigable GUI so the TV always
+# shows something that can start a stream. (Phase 1 shipped with only the fallback.)
 set -u
 COUCH_ROOT="${COUCH_ROOT:-/opt/couch}"
 LOG_DIR="${COUCH_LOG_DIR:-/var/log/couch}"
+STATE_DIR="${COUCH_STATE_DIR:-/var/lib/couch}"
+STRIKES_FILE="$STATE_DIR/launcher-strikes"
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
-export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland,x11}"
 
 log() { printf '%s kiosk: %s\n' "$(date -Is)" "$*" >>"$LOG_DIR/kiosk.log" 2>/dev/null || true; }
+strikes() { cat "$STRIKES_FILE" 2>/dev/null || echo 0; }
 
-if [ -x "$COUCH_ROOT/venv/bin/python" ] && [ -d "$COUCH_ROOT/app/couch" ] && \
-   "$COUCH_ROOT/venv/bin/python" -c 'import pygame' >/dev/null 2>&1; then
-    log "starting Couch launcher"
-    cd "$COUCH_ROOT/app" || exit 1
-    exec "$COUCH_ROOT/venv/bin/python" -m couch.launcher
+fallback() {
+    log "starting moonlight-qt fallback GUI ($1)"
+    exec "$COUCH_ROOT/bin/moonlight-qt"
+}
+
+if ! { [ -x "$COUCH_ROOT/venv/bin/python" ] && [ -d "$COUCH_ROOT/app/couch" ] &&
+       "$COUCH_ROOT/venv/bin/python" -c 'import pygame' >/dev/null 2>&1; }; then
+    fallback "launcher not available"
+fi
+if [ "$(strikes)" -ge 3 ]; then
+    # Reset so the next kiosk restart (e.g. after the moonlight GUI is closed) tries the launcher again.
+    echo 0 >"$STRIKES_FILE" 2>/dev/null || true
+    fallback "launcher crashed 3 times in a row"
 fi
 
-log "launcher not available; starting moonlight-qt fallback GUI"
-exec "$COUCH_ROOT/bin/moonlight-qt"
+log "starting Couch launcher"
+start=$(date +%s)
+cd "$COUCH_ROOT/app" || fallback "no app dir"
+"$COUCH_ROOT/venv/bin/python" -m couch.launcher
+rc=$?
+if [ "$rc" -ne 0 ] && [ $(( $(date +%s) - start )) -lt 60 ]; then
+    echo $(( $(strikes) + 1 )) >"$STRIKES_FILE" 2>/dev/null || true
+    log "launcher exited rc=$rc after $(( $(date +%s) - start ))s (strike $(strikes))"
+else
+    echo 0 >"$STRIKES_FILE" 2>/dev/null || true
+    log "launcher exited rc=$rc"
+fi
+exit "$rc"

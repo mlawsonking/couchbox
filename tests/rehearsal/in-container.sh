@@ -58,6 +58,7 @@ check_mode() { # path mode owner
 check_mode /opt/couch/bin/kiosk 755 root:root
 check_mode /opt/couch/bin/couch-doctor 755 root:root
 check_mode /opt/couch/bin/moonlight-qt 755 root:root
+check_mode /opt/couch/app/couch/launcher/app.py 644 root:root
 check_mode /etc/couch 750 root:couch
 check_mode /etc/couch/couch.toml 640 root:couch
 check_mode /var/lib/couch/home 750 couch:couch
@@ -73,6 +74,12 @@ check_mode /etc/apt/apt.conf.d/21couch-auto-upgrades 644 root:root
 /opt/couch/bin/moonlight-qt --version || fail "moonlight wrapper does not run"
 [ -f /opt/couch/src/installer/install.sh ] || fail "source copy missing"
 pass "files, modes and owners"
+
+/opt/couch/venv/bin/python -m pip list --format=freeze 2>/dev/null | grep -v '^pip==' >/tmp/pip.txt
+[ "$(cat /tmp/pip.txt)" = "pygame-ce==2.5.2" ] || fail "venv holds more than pygame-ce: $(cat /tmp/pip.txt)"
+(cd /opt/couch/app && setpriv --reuid=couch --regid=couch --init-groups env HOME=/var/lib/couch/home \
+    /opt/couch/venv/bin/python -m couch.launcher --selftest) || fail "launcher selftest failed as user couch"
+pass "venv has only pygame-ce; launcher renders every screen as user couch"
 
 getent passwd couch | grep -q ':/usr/sbin/nologin$' || fail "couch has a login shell"
 for g in video input render audio; do id -nG couch | tr ' ' '\n' | grep -qx "$g" || fail "couch not in $g"; done
