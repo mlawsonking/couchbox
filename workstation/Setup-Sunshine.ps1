@@ -37,7 +37,18 @@ if (-not $SkipWinget) {
         $rc = Invoke-CouchWinget -Arguments $args1
         if ($rc -ne 0) {
             $rc2 = Invoke-CouchWinget -Arguments @('upgrade', '--exact', '--id', 'LizardByte.Sunshine', '--accept-package-agreements', '--accept-source-agreements', '--silent')
-            Write-Host ('  winget install rc=' + $rc + ', upgrade rc=' + $rc2 + ' (non-zero upgrade usually means: already current)')
+            if ($rc2 -eq 0) {
+                Write-Host ('  winget install rc=' + $rc + ', upgrade rc=0 (upgraded)')
+            } elseif ($rc2 -eq -1978335090) {
+                # winget 0x8A15010E: "the install technology is different from the current version installed".
+                # Seen 2026-11-04 on the host: Sunshine 2026.516 was installed by a different installer than the
+                # winget package, so winget refuses to upgrade in place. The kit never uninstalls Sunshine.
+                Write-Host '  INFO    winget cannot upgrade Sunshine in place (installed by a different installer technology).'
+                Write-Host '          Any Sunshine from 2025 on works for couchbox (prep-cmd + SUNSHINE_CLIENT_* env vars).'
+                Write-Host '          To take the newer build anyway: winget uninstall --id LizardByte.Sunshine, then rerun -Apply.'
+            } else {
+                Write-Host ('  winget install rc=' + $rc + ', upgrade rc=' + $rc2 + ' (winget found no newer package, or refused the upgrade; Check-Sunshine reports the running version)')
+            }
         }
     }
 }
