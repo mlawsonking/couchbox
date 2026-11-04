@@ -3,15 +3,17 @@
   couchbox: enable Wake-on-LAN (magic packet) on the wired/wireless adapter in use and turn Windows Fast Startup
   off (Fast Startup's hybrid shutdown stops most NICs from waking). Prints the MAC to put in the NUC's couch.toml.
 .DESCRIPTION
-  Dry run by default; -Apply to change (elevated). Previous values are saved to a backup JSON beside this script.
+  Dry run by default (-WhatIf is accepted and is always a dry run); -Apply to change (elevated). On a PC that is
+  already set up it prints "already correct" and -Apply changes nothing. Previous values are saved to a backup JSON beside this script.
   The BIOS/UEFI "Wake on LAN" / "Power on by PCI-E" setting is a manual step (see docs/RUNBOOK.md); this script
   never touches firmware, Windows Update or display settings.
 #>
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess = $true)]
 param([switch]$Apply, [string]$AdapterName, [string]$BackupDir = $PSScriptRoot)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'CouchKit.psm1') -Force
+if ($WhatIfPreference) { $Apply = $false }      # -WhatIf is always a dry run, even together with -Apply
 
 $adapters = @(Get-CouchWolAdapter)
 if ($AdapterName) { $adapters = @($adapters | Where-Object { $_.Name -eq $AdapterName }) }
@@ -35,6 +37,9 @@ if ($fs -eq 0) {
 } else {
     $changes++
     Write-CouchPlan -Apply:$Apply -Message ('turn Fast Startup off (HiberbootEnabled ' + $fs + ' -> 0)')
+}
+if ($changes -eq 0) {
+    Write-Host 'already correct: Wake on Magic Packet is on and Fast Startup is off - nothing to change.'
 }
 if ($Apply -and $changes -gt 0) {
     Write-Utf8NoBom -Path $backupPath -Text ($backup | ConvertTo-Json -Depth 5)

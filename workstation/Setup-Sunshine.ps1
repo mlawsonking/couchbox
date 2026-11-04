@@ -17,7 +17,8 @@ param(
     [string]$SunshineConfigDir,
     [string]$LibraryJson,
     [switch]$SkipWinget,
-    [switch]$SkipFirewall
+    [switch]$SkipFirewall,
+    [switch]$SkipDisplay
 )
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -83,6 +84,48 @@ if ($merged.Added.Count -eq 0) {
         $bak = Backup-CouchFile -Path $appsPath
         if ($bak) { Write-Host ('          backup: ' + $bak) }
         Write-Utf8NoBom -Path $appsPath -Text $merged.Json
+    }
+}
+# 4. Stream display: global prep-cmd do/undo so the 3440x1440 ultrawide primary switches to the TV's mode.
+if (-not $SkipDisplay) {
+    $kitDir = Join-Path $SunshineConfigDir 'couchbox'
+    $script = Join-Path $kitDir 'Set-StreamDisplay.ps1'
+    foreach ($f in @('Set-StreamDisplay.ps1', 'CouchKit.psm1')) {
+        $src = Join-Path $PSScriptRoot $f
+        $dst = Join-Path $kitDir $f
+        $same = (Test-Path -LiteralPath $dst) -and ([System.IO.File]::ReadAllText($src) -eq [System.IO.File]::ReadAllText($dst))
+        if ($same) {
+            Write-Host ('  ok      ' + $dst + ' up to date')
+        } else {
+            Write-CouchPlan -Apply:$Apply -Message ('copy ' + $f + ' to ' + $kitDir)
+            if ($Apply) {
+                if (-not (Test-Path -LiteralPath $kitDir)) { New-Item -ItemType Directory -Path $kitDir | Out-Null }
+                $bak = Backup-CouchFile -Path $dst
+                if ($bak) { Write-Host ('          backup: ' + $bak) }
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+            }
+        }
+    }
+    $confPath = Join-Path $SunshineConfigDir 'sunshine.conf'
+    $conf = ''
+    if (Test-Path -LiteralPath $confPath) { $conf = [System.IO.File]::ReadAllText($confPath) }
+    $m = Merge-SunshineConf -Text $conf -Do (Get-StreamDisplayCommand -ScriptPath $script -Verb 'do') -Undo (Get-StreamDisplayCommand -ScriptPath $script -Verb 'undo')
+    if (-not $m.Changed) {
+        Write-Host ('  ok      ' + $confPath + ' already has the couchbox display prep-cmd')
+    } else {
+        Write-CouchPlan -Apply:$Apply -Message ('add global_prep_cmd (Set-StreamDisplay.ps1 do/undo) to ' + $confPath + ' (other settings kept)')
+        if ($Apply) {
+            $bak = Backup-CouchFile -Path $confPath
+            if ($bak) { Write-Host ('          backup: ' + $bak) }
+            Write-Utf8NoBom -Path $confPath -Text $m.Text
+            Write-Host '          restart SunshineService (or reboot) for sunshine.conf changes to apply'
+        }
+    }
+    if ($null -ne (Get-CouchRestoreTask)) {
+        Write-Host '  ok      scheduled task "couchbox display restore" exists'
+    } else {
+        Write-CouchPlan -Apply:$Apply -Message 'register logon task "couchbox display restore" (puts the display back if a stream ended uncleanly)'
+        if ($Apply) { Register-CouchRestoreTask -ScriptPath $script }
     }
 }
 Write-Host 'Next: open https://localhost:47990 on this PC once to set the Sunshine admin password; pair from the TV (Menu > Pair).'

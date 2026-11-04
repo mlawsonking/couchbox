@@ -14,7 +14,7 @@ nothing a kid can break.
 ## Layout
 
 ```
-installer/install.sh          idempotent NUC installer (--dry-run, --no-services, --no-dkms), Ubuntu 24.04 only
+installer/install.sh          idempotent NUC installer (--dry-run, --no-services, --with-xone, --with-xpadneo), Ubuntu 24.04 only
 installer/pins.env            pinned moonlight-qt AppImage (sha256), xone + xpadneo (tag + commit), dongle firmware
 installer/make-usb.sh         stock 24.04 live-server ISO -> unattended couchbox installer ISO (--disk required)
 installer/autoinstall/        user-data template + disk-guard.sh (refuses to guess a disk)
@@ -29,7 +29,8 @@ couch/bin/couch-update        update with automatic rollback; --import of the wo
 couch/bin/couch-maint         root timer: gamepad-driver check per kernel, nightly reboot window
 workstation/                  Windows kit (PowerShell 5.1, ASCII, dry run by default, -Apply to change):
                                 Setup-Sunshine.ps1, Export-SteamLibrary.ps1, Set-WakeOnLan.ps1, Check-Sunshine.ps1,
-                                Install-LinkProbe.ps1, CouchKit.psm1 (shared, mockable), tests/ (Pester + 5.1 lint)
+                                Install-LinkProbe.ps1, Set-StreamDisplay.ps1, CouchKit.psm1 (shared, mockable),
+                                tests/ (Pester + 5.1 lint)
 tests/                        bats, pytest, container rehearsal, fixtures, vendored subiquity autoinstall schema
 scripts/check-secrets.sh      repo gate: keys/tokens/passwords/MACs/home IPs
 ```
@@ -62,7 +63,13 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 | systemd units valid | yes: `systemd-analyze verify` in the rehearsal | cage actually taking DRM master on tty1, no login prompt, no cursor |
 | autoinstall user-data valid | yes: rendered for 3 variants, validated against subiquity's JSON schema + yamllint | the USB really installing unattended (ISO repack via xorriso not exercised in CI: needs the 2.6 GB ISO) |
 | disk guard refuses ambiguity | yes: bats with a fake `lsblk` | the NUC's real `lsblk` output |
-| xone / xpadneo DKMS build + dongle firmware | pins verified (commit + firmware sha256); `--no-dkms` in CI | DKMS build on the NUC kernel, dongle pairing, BT pairing |
+| Default install needs no out-of-tree gamepad driver and never blacklists `xpad` (the couch's receiver is 045E:028E -> xpad); a stale couchbox xpad blacklist is removed | yes: bats (dry-run plans with and without `--with-xone`) + rehearsal (file absent, stale file removed, idempotent) | the receiver on the NUC |
+| Optional xone / xpadneo (`--with-xone`, `--with-xpadneo`) DKMS build + adapter firmware | pins verified (commit + firmware sha256); not built in CI | DKMS build on the NUC kernel, BT pairing |
+| Unknown pads: first-run mapping screen -> SDL_GAMECONTROLLERCONFIG line in `/etc/couch/gamepads.txt`, applied without restart; re-mapping only via the PIN-gated menu | yes: pytest with synthetic SDL joystick events and a fake SDL device layer (hot-plug, pad off/on, off mid-mapping, inverted axes, d-pad as axes, skip, abort) | real SDL re-reading the mapping on a real unknown pad |
+| udev rule (joystick nodes to group input, hidraw via uaccess) | lands with the right mode (rehearsal) | device permissions on the NUC |
+| couch-doctor gamepad list: VID:PID, SDL GUID (database form), mapped yes/NO | yes: fixtures for the confirmed receiver and an unknown pad; GUID of 045E:028E equals SDL's database line | real `/proc/bus/input/devices` |
+| Decode rules for the NUC7i5BNK (Gen9.5): vainfo decides; HEVC unlocks 4K60, AV1 absent; 4K60 rung HEVC-only; AV1 opt-in; HDR never requested; `intel-media-va-driver` (iHD) installed | yes: iHD Kaby Lake vainfo fixture, argv tests, bats + rehearsal package check | 4K60 HEVC playback on the TV |
+| Host vanishing mid-stream (the PC has bugchecked repeatedly): LOST screen, Retry walks wake -> Sunshine -> stream | yes: state-machine test (moonlight exits / moonlight hangs) | the real PC rebooting mid-game |
 | couch-doctor v0 matrix (display, gamepad x3 paths, decode caps, services) | yes: pytest + bats on fixture sysroots (good + 5 failure variants) | real DRM connectors, real vainfo, real pads |
 | Launcher state machine: every transition and every timeout (wake 120 s, Sunshine 60 s, 3 strikes, host gone 30 s, pair 180 s) | yes: pytest, plus a test asserting the full edge set is covered | real timings against the real workstation (acceptance 3: <= 90 s asleep, <= 10 s awake) |
 | Gamepad mapping (D-pad/stick/A/B/Start, Guide held 3 s, two pads, raw-joystick fallback, keyboard/mouse ignored) | yes: synthetic SDL events, including through the real SDL event queue | the dongle/BT/wired pads' actual SDL mappings; Guide visible while moonlight has focus (`SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS`) |
@@ -82,6 +89,8 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 | Post-kernel-update driver check; nightly reboot window (skips while streaming, right after boot) | yes: pytest | a real kernel update with DKMS |
 | couch-update: rollback point, failed install or failed verification -> previous installer re-run; `--import` validates JSON, digits-only appids, JPEG magic | yes: pytest + rehearsal (`--status`, `--import`) | a real moonlight-qt version bump |
 | Daemon runs as `couch` with the target's stdlib python3, serves /health, enforces the allow-list | yes: container rehearsal | - |
+| Stream display for the 3440x1440 ultrawide: mode selection (exact, refresh fallback, largest fitting 16:9), do/undo/restore state (original never overwritten), sunshine.conf `global_prep_cmd` merge keeping other settings and prep commands | yes: Pester; the do/undo round trip with Sunshine's env vars and mocked P/Invoke | the actual `ChangeDisplaySettingsEx` call on the ultrawide, Sunshine running the prep-cmd |
+| Host facts: merge keeps the two existing apps unchanged; Set-WakeOnLan `-WhatIf` says "already correct" and `-Apply` is a no-op on the host's values; Check-Sunshine reports link speed + Realtek Gigabit Lite/EEE/Power Saving as INFO only | yes: Pester with the host's values as fixtures | the host itself |
 | Workstation kit: dry run writes nothing and calls nothing (every side effect is a mocked CouchKit wrapper); -Apply backs up, then changes | yes: Pester runs the real scripts against fixtures | Windows 11 with UAC, real winget/firewall/NIC cmdlets |
 | apps.json merge keeps every existing entry, unknown per-app and top-level keys; adds only missing names (case-insensitive); idempotent; written without a BOM | yes: Pester with a hand-made fixture (custom emulator entry, elevated prep-cmd, extra keys) | Sunshine actually loading it (targeted v2026.1103.23515) |
 | Steam library across all library folders (`libraryfolders.vdf`), installed = StateFlags bit 4, redistributables skipped, Steam files never written | yes: Pester with fixture `.vdf`/`.acf` (escaped quotes, comments, two libraries) | a real Steam install |
@@ -136,9 +145,18 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 - **Quality:** the hourly `doctor --measure` (skipped while streaming) runs a 10 s iperf3 probe to the workstation
   and records the highest ladder rung whose bitrate is at most half the measured throughput (one rung lower on a
   jittery or lossy link) in `/var/lib/couch/link.json`; `display_mode = "auto"` uses it, default 1080p60 15 Mbps.
-- **Wired gamepads and xone:** xone blacklists the in-kernel `xpad` (they conflict over Xbox One/Series pads), so
-  with xone installed wired Xbox One/Series pads are served by `xone_wired`; `xpad` serves wired pads only when xone
-  is not installed (`--no-dkms`). Xbox 360 wired pads would need `xpad-noone` (not installed; documented).
+- **Gamepads (corrected 2026-11-03):** the couch's receiver presents as a wired Xbox 360 pad (045E:028E), so the
+  in-kernel `xpad` driver + SDL's database are the whole primary path. xone/xpadneo are opt-in installer flags. Note
+  that `--with-xone` blacklists `xpad` and would break this receiver; P1-P3 installed xone by default, which this
+  change undoes (and the installer removes a stale couchbox blacklist). Unknown pads get the first-run mapping
+  screen; re-mapping is behind `[gamepad] setup_pin` so a kid cannot reach it.
+- **NUC7i5BNK:** nothing is hard-coded to the model. couch-doctor's vainfo decides the decode ceiling (HEVC decode
+  -> 4K60 allowed; the 4K60 rung always uses HEVC). AV1 is used only if configured explicitly; HDR is never
+  requested (moonlight-qt's default is SDR). The installer installs `intel-media-va-driver` (iHD) alongside i965 and
+  Mesa so any Intel/AMD iGPU works; libva picks iHD for Gen9.5.
+- **Stream display:** a Sunshine `global_prep_cmd` (not per-app) so every app, including the two pre-existing ones,
+  gets the switch. The mode change is not persisted (a reboot also restores); the logon task covers a stream that
+  ended without `undo`. A virtual display driver is documented as the alternative, not installed.
 - **Admin access:** `couchadmin` is key-only (password locked) with `systemd-journal`/`adm` groups and **no sudo**, so
   the remote key can read health and logs but not change the box. The console admin created by autoinstall has sudo,
   a password Michael types at USB-build time, and no SSH key.

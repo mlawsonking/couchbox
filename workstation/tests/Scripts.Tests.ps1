@@ -20,6 +20,36 @@ Describe 'Setup-Sunshine.ps1' {
         Mock Invoke-CouchWinget { return 0 }
         Mock Get-CouchFirewallRule { return $null }
         Mock New-CouchFirewallRule { }
+        Mock Get-CouchRestoreTask { return $null }
+        Mock Register-CouchRestoreTask { }
+    }
+    It 'keeps the two apps the host already has (facts) and adds only the games' {
+        $d = Join-Path $TestDrive ('host-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory $d | Out-Null
+        Copy-Item (Join-Path $Fix 'host-apps.json') (Join-Path $d 'apps.json')
+        $before = [System.IO.File]::ReadAllText((Join-Path $d 'apps.json')) | ConvertFrom-Json
+        & (Join-Path $Root 'Setup-Sunshine.ps1') -Apply -SkipWinget -SkipFirewall -SkipDisplay -SunshineConfigDir $d -LibraryJson (Join-Path $Fix 'steam-library.json') 6>&1 | Out-Null
+        $doc = [System.IO.File]::ReadAllText((Join-Path $d 'apps.json')) | ConvertFrom-Json
+        ($doc.apps | ForEach-Object { $_.name }) | Should -Be @('Desktop', 'Steam Big Picture', 'Celeste', 'Hollow Knight')
+        ($doc.apps[0] | ConvertTo-Json -Depth 5) | Should -Be ($before.apps[0] | ConvertTo-Json -Depth 5)
+        ($doc.apps[1] | ConvertTo-Json -Depth 5) | Should -Be ($before.apps[1] | ConvertTo-Json -Depth 5)
+    }
+    It 'wires the stream-display prep-cmd: copies the script, merges sunshine.conf, registers the restore task' {
+        $d = New-SunshineDir
+        Write-Utf8NoBom -Path (Join-Path $d 'sunshine.conf') -Text ''
+        $out = & (Join-Path $Root 'Setup-Sunshine.ps1') -SkipWinget -SkipFirewall -SunshineConfigDir $d 6>&1 | Out-String
+        $out | Should -Match 'PLAN    add global_prep_cmd'
+        Test-Path (Join-Path $d 'couchbox') | Should -BeFalse
+        & (Join-Path $Root 'Setup-Sunshine.ps1') -Apply -SkipWinget -SkipFirewall -SunshineConfigDir $d 6>&1 | Out-Null
+        Test-Path (Join-Path $d 'couchbox/Set-StreamDisplay.ps1') | Should -BeTrue
+        Test-Path (Join-Path $d 'couchbox/CouchKit.psm1') | Should -BeTrue
+        $conf = [System.IO.File]::ReadAllText((Join-Path $d 'sunshine.conf'))
+        $conf | Should -Match 'global_prep_cmd = \[\{"do":"powershell.exe .*Set-StreamDisplay.ps1\\" do"'
+        @(Get-ChildItem $d -Filter 'sunshine.conf.couchbox-*.bak').Count | Should -Be 1
+        Should -Invoke Register-CouchRestoreTask -Times 1
+        $again = & (Join-Path $Root 'Setup-Sunshine.ps1') -Apply -SkipWinget -SkipFirewall -SunshineConfigDir $d 6>&1 | Out-String
+        $again | Should -Match 'already has the couchbox display prep-cmd'
+        $again | Should -Match 'Set-StreamDisplay.ps1 up to date'
     }
     It 'dry run: prints the plan, writes nothing, calls nothing' {
         $d = New-SunshineDir
@@ -34,7 +64,7 @@ Describe 'Setup-Sunshine.ps1' {
     }
     It '-Apply: backs up, merges, opens only the two Sunshine rules' {
         $d = New-SunshineDir
-        & (Join-Path $Root 'Setup-Sunshine.ps1') -Apply -SunshineConfigDir $d -LibraryJson (Join-Path $Fix 'steam-library.json') 6>&1 | Out-Null
+        & (Join-Path $Root 'Setup-Sunshine.ps1') -Apply -SkipDisplay -SunshineConfigDir $d -LibraryJson (Join-Path $Fix 'steam-library.json') 6>&1 | Out-Null
         @(Get-ChildItem $d -Filter 'apps.json.couchbox-*.bak').Count | Should -Be 1
         $doc = [System.IO.File]::ReadAllText((Join-Path $d 'apps.json')) | ConvertFrom-Json
         ($doc.apps | ForEach-Object { $_.name }) | Should -Be @('Desktop', "Michael's Emulator", 'Steam Big Picture', 'Celeste', 'Hollow Knight')
@@ -120,6 +150,28 @@ Describe 'Set-WakeOnLan.ps1' {
         Should -Invoke Set-CouchWol -Times 1 -ParameterFilter { $AdapterName -eq 'Ethernet' }
         Should -Invoke Set-CouchFastStartup -Times 1 -ParameterFilter { $Value -eq 0 }
     }
+    It 'host values from the facts: -WhatIf says already correct; -Apply is a no-op' {
+        # facts/lan-facts.json workstation.wake_on_lan: magic packet ENABLED (Realtek *WakeOnMagicPacket = 1), Fast Startup OFF
+        Mock Get-CouchWolAdapter { @([pscustomobject]@{ Name = 'Ethernet'; Mac = 'AA-BB-CC-DD-EE-FF'; Magic = '1'; PowerMgmt = 'Enabled'; Media = '802.3' }) }
+        Mock Get-CouchFastStartup { 0 }
+        $bd = Join-Path $TestDrive 'wol-host'
+        New-Item -ItemType Directory $bd | Out-Null
+        $out = & (Join-Path $Root 'Set-WakeOnLan.ps1') -WhatIf -BackupDir $bd 6>&1 | Out-String
+        $out | Should -Match 'already correct'
+        $out | Should -Not -Match 'PLAN'
+        $out = & (Join-Path $Root 'Set-WakeOnLan.ps1') -Apply -BackupDir $bd 6>&1 | Out-String
+        $out | Should -Match 'already correct'
+        Should -Invoke Set-CouchWol -Times 0
+        Should -Invoke Set-CouchFastStartup -Times 0
+        @(Get-ChildItem $bd).Count | Should -Be 0
+    }
+    It '-WhatIf wins over -Apply' {
+        $bd = Join-Path $TestDrive 'wol-whatif'
+        New-Item -ItemType Directory $bd | Out-Null
+        & (Join-Path $Root 'Set-WakeOnLan.ps1') -Apply -WhatIf -BackupDir $bd 6>&1 | Out-Null
+        Should -Invoke Set-CouchWol -Times 0
+        @(Get-ChildItem $bd).Count | Should -Be 0
+    }
     It 'already configured: nothing to do even with -Apply' {
         Mock Get-CouchWolAdapter { @([pscustomobject]@{ Name = 'Ethernet'; Mac = 'AA-BB-CC-DD-EE-FF'; Magic = '1'; PowerMgmt = 'Enabled'; Media = '802.3' }) }
         Mock Get-CouchFastStartup { 0 }
@@ -163,6 +215,25 @@ Describe 'Check-Sunshine.ps1' {
         Mock Get-CouchFastStartup { 0 }
         Mock Get-CouchGpuName { @('NVIDIA GeForce RTX 4070') }
         Mock Get-CouchProbeTask { [pscustomobject]@{ TaskName = 'couchbox iperf3' } }
+        Mock Get-CouchLinkInfo { @([pscustomobject]@{ Name = 'Ethernet'; LinkSpeed = '1 Gbps'; Media = '802.3'; Props = @{ 'Gigabit Lite' = 'Enabled'; 'Energy-Efficient Ethernet' = 'Enabled'; 'Power Saving Mode' = 'Disabled' } }) }
+    }
+    It 'reports link speed and Realtek power-saving properties as INFO only (exit code unaffected)' {
+        $d = New-SunshineDir
+        $m = Merge-SunshineApps -ExistingJson ([System.IO.File]::ReadAllText((Join-Path $d 'apps.json'))) -NewApps @(New-SunshineDefaultApps)
+        Write-Utf8NoBom -Path (Join-Path $d 'apps.json') -Text $m.Json
+        $out = & (Join-Path $Root 'Check-Sunshine.ps1') -SunshineConfigDir $d 6>&1 | Out-String
+        $out | Should -Match 'link\s+INFO\s+Ethernet: link 1 Gbps; consider turning off Energy-Efficient Ethernet, Gigabit Lite'
+        $out | Should -Not -Match 'Power Saving Mode \('
+        $LASTEXITCODE | Should -Be 0
+    }
+    It 'a 100 Mbps link is still only a recommendation' {
+        Mock Get-CouchLinkInfo { @([pscustomobject]@{ Name = 'Ethernet'; LinkSpeed = '100 Mbps'; Media = '802.3'; Props = @{} }) }
+        $d = New-SunshineDir
+        $m = Merge-SunshineApps -ExistingJson ([System.IO.File]::ReadAllText((Join-Path $d 'apps.json'))) -NewApps @(New-SunshineDefaultApps)
+        Write-Utf8NoBom -Path (Join-Path $d 'apps.json') -Text $m.Json
+        $out = & (Join-Path $Root 'Check-Sunshine.ps1') -SunshineConfigDir $d 6>&1 | Out-String
+        $out | Should -Match 'below gigabit'
+        $LASTEXITCODE | Should -Be 0
     }
     It 'all green -> exit 0' {
         $d = New-SunshineDir

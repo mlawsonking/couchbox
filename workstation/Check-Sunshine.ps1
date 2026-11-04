@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
   couchbox: read-only doctor for the workstation side. Changes nothing.
-  Service, ports listening, firewall rules, apps.json valid, Wake-on-LAN + Fast Startup, GPU encoder, iperf3 probe.
+  Service, ports listening, firewall rules, apps.json valid, Wake-on-LAN + Fast Startup, GPU encoder, iperf3 probe,
+  link speed and NIC power-saving properties (INFO only: a recommendation, never a failure).
 #>
 [CmdletBinding()]
 param([string]$SunshineConfigDir)
@@ -50,6 +51,8 @@ if ($fs -eq 0) { Add-Result 'fast-startup' 'OK' 'off' } else { Add-Result 'fast-
 $gpus = @(Get-CouchGpuName)
 $enc = @($gpus | Where-Object { $_ -match 'NVIDIA|GeForce|RTX|Radeon|AMD|Intel\(R\) Arc|Arc\(TM\)|Iris Xe|UHD' })
 if ($enc.Count -gt 0) { Add-Result 'gpu-encoder' 'OK' ($enc -join '; ') } else { Add-Result 'gpu-encoder' 'WARN' ('no known hardware encoder GPU: ' + ($gpus -join '; ')) }
+
+foreach ($line in @(Get-LinkRecommendation -Links @(Get-CouchLinkInfo))) { Add-Result 'link' 'INFO' $line }
 
 if ($null -ne (Get-CouchProbeTask)) { Add-Result 'link-probe' 'OK' 'iperf3 task present' } else { Add-Result 'link-probe' 'WARN' 'no iperf3 probe (Install-LinkProbe.ps1 -Apply) - the NUC cannot measure throughput' }
 

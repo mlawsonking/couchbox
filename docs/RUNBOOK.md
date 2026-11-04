@@ -23,16 +23,35 @@ first; nothing changes without `-Apply`.
    Steam's files only.
 3. `.\Setup-Sunshine.ps1 -Apply -LibraryJson .\couchbox-export\steam-library.json`. Installs/upgrades Sunshine
    (winget `LizardByte.Sunshine`), adds the two `couchbox Sunshine` firewall rules (Private network, local subnet),
-   and merges Desktop, Steam Big Picture and one entry per installed game into Sunshine's `apps.json` (backup
-   `apps.json.couchbox-<time>.bak` beside it; your own entries are never touched).
+   and merges one entry per installed game into Sunshine's `apps.json` (backup `apps.json.couchbox-<time>.bak`
+   beside it). The two apps Sunshine already has ("Desktop", "Steam Big Picture") and any hand-made entries are
+   kept exactly as they are. It also sets up the **stream display switch** (next step).
+   - **Stream display (ultrawide primary):** Sunshine captures the primary monitor, a 3440x1440 ultrawide, so a 16:9
+     TV would get black bars. Setup copies `Set-StreamDisplay.ps1` (+ `CouchKit.psm1`) to
+     `C:\Program Files\Sunshine\config\couchbox\`, adds a `global_prep_cmd` do/undo pair to `sunshine.conf`
+     (backup beside it; other settings kept) and a logon task "couchbox display restore". When the TV starts a
+     stream, `do` switches the primary to the TV's resolution/refresh (Sunshine passes `SUNSHINE_CLIENT_WIDTH/HEIGHT
+     /FPS`; a 4K request on this monitor gets the largest 16:9 mode it has, e.g. 2560x1440) and saves your mode;
+     `undo` restores it when the stream ends; the logon task restores it if a stream ended uncleanly. Restart
+     SunshineService once after setup. Opt out with `-SkipDisplay`.
+   - **Alternative (documented, not installed):** a virtual display driver (an IDD such as the open-source
+     "Virtual Display Driver") gives Sunshine a 16:9 virtual monitor so the ultrawide never changes mode. More
+     moving parts (a kernel-mode-adjacent driver, Sunshine `output_name` config); consider it only if mode
+     switching misbehaves with a game. The existing "Virtual Desktop Monitor" device (from the Virtual Desktop VR
+     app) is NOT such a driver; leave it alone.
 4. Open `https://localhost:47990` once and set Sunshine's admin user/password (stays on the PC).
-5. `.\Set-WakeOnLan.ps1 -Apply`. Enables Wake on Magic Packet, turns Fast Startup off, prints the line for the
-   NUC's config: `mac = "AA:BB:CC:DD:EE:FF"`. Previous values: `wol-backup-<time>.json` beside the script.
+5. `.\Set-WakeOnLan.ps1 -WhatIf` first. On this PC (facts: magic packet already enabled, Fast Startup already off)
+   it prints **"already correct"** and `-Apply` changes nothing. Otherwise `-Apply` enables Wake on Magic Packet,
+   turns Fast Startup off and keeps the previous values in `wol-backup-<time>.json`. It always prints the line for
+   the NUC's config: `mac = "AA:BB:CC:DD:EE:FF"`.
 6. **BIOS/UEFI (manual, once):** reboot into setup, enable "Wake on LAN" / "Power On By PCI-E/PCI". The kit
    never touches firmware. The PC must be on a **cable** to its mesh point for wake to work reliably.
 7. `.\Install-LinkProbe.ps1 -Apply`. iperf3 as a startup task + one firewall rule (TCP 5201, local subnet) so the
    NUC can measure the garage-to-living-room link.
-8. `.\Check-Sunshine.ps1` must end with every line OK (exit 0). WARN lines say what to run.
+8. `.\Check-Sunshine.ps1` must end with every line OK (exit 0). WARN lines say what to run. `link INFO` lines are
+   advice only: the link speed, and Realtek "Gigabit Lite" / "Energy-Efficient Ethernet" / "Power Saving Mode" if
+   they are on (they can downshift a gigabit link to 100 Mbps on a marginal cable; turning them off is your call,
+   the kit never changes them). There is no host-side bitrate cap: the quality ladder follows the measured path.
 
 ## 2. Install the NUC (M2)
 
@@ -62,7 +81,10 @@ sudo installer/install.sh --dry-run      # read the plan
 sudo installer/install.sh                # second run prints "changes: 0"
 ```
 
-Options: `--dry-run` (plan only), `--no-services` and `--no-dkms` (container rehearsal only). The installer refuses
+Options: `--dry-run` (plan only), `--no-services` (container rehearsal only), `--with-xone` (Microsoft Xbox Wireless
+Adapter only: it blacklists the in-kernel `xpad` driver, which the couch's receiver needs - do NOT use it for that
+receiver), `--with-xpadneo` (Xbox pads over Bluetooth), `--no-dkms` (accepted, does nothing: DKMS drivers are
+opt-in). The installer refuses
 anything but Ubuntu 24.04, logs to `/var/log/couch/install.log`, and touches only its own paths (README lists them).
 
 ### Configure
@@ -154,10 +176,18 @@ streams), `link.json` (measured link + chosen quality), `xone-status.json` (game
 
 ## 9. Gamepads
 
-- **Xbox Wireless Adapter (dongle):** plug into the NUC; press the adapter's button, then the pad's pair button.
-  Driver: xone (DKMS). Firmware is fetched and checksum-verified by the installer.
-- **Bluetooth (fallback):** `sudo bluetoothctl` > `scan on` > hold the pad's pair button > `pair <MAC>` >
-  `trust <MAC>` > `connect <MAC>`. Driver: xpadneo (DKMS).
-- **Wired USB:** always works (xone_wired for Xbox One/Series pads). Xbox 360 wired pads are not supported while
-  xone is installed (they would need `xpad-noone`).
-- A second pad works the same way; unplug/replug of the adapter returns input within seconds (SDL hot-plug).
+- **The couch's receiver (default path, no extra driver):** the generic 2.4 GHz dongle presents itself as a wired
+  "Xbox 360 Controller" (USB 045E:028E). The kernel's `xpad` driver claims it and SDL maps it out of the box. Plug it
+  into any USB port; turn the pad on.
+- **Unknown pads:** a pad SDL has no mapping for gets a one-time **"New controller!"** screen the first time it is
+  plugged in: press each button as asked (wait 10 s to skip one the pad doesn't have). The result is saved as an
+  SDL mapping line in `/etc/couch/gamepads.txt` and used immediately and on every start. Until then the pad still
+  navigates with its first buttons and D-pad. To redo it later: set `[gamepad] setup_pin = "1234"` (any 4 digits)
+  in `couch.toml`, then Menu > **Set up a controller** asks for the code (D-pad up/down/left/right, A).
+- **What the box sees:** `couch-doctor` lists every pad with VID:PID, SDL GUID and mapped yes/NO.
+- **Hot-plug:** unplugging/replugging the receiver or switching a pad off and on needs no restart.
+- **Bluetooth (optional):** `sudo installer/install.sh --with-xpadneo`, then `sudo bluetoothctl` > `scan on` > hold
+  the pad's pair button > `pair <MAC>` > `trust <MAC>` > `connect <MAC>`. The NUC7 has Bluetooth 4.2.
+- **Microsoft Xbox Wireless Adapter (optional, not the couch's dongle):** `--with-xone` (fetches the checksum-verified
+  firmware). It blacklists `xpad`, so 045E:028E receivers stop working while it is installed; re-running the
+  installer without `--with-xone` removes the blacklist.

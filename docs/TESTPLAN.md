@@ -18,13 +18,17 @@ Date: ________  NUC model: ________  TV: ________  Workstation: ________
 
 1. Move around all tiles with the D-pad, then the left stick. Start opens the menu, B closes it.
 2. Turn on a second pad: it also moves the focus.
-3. Pull the Xbox adapter out, count to 3, plug it back: the pad works again within 5 s.
+3. Pull the receiver out, count to 3, plug it back: the pad works again within 5 s. Switch the pad off and on:
+   it works again without touching the box.
+4. **[SSH]** `couch-doctor` gamepad line shows the pad as `045e:028e` ... `mapped yes`.
 
 [ ] PASS  [ ] FAIL  notes: __________________
 
 ## 3. Steam Big Picture: from asleep <= 90 s, from awake <= 10 s
 
 1. Put the PC to sleep (Start > Power > Sleep). Wait 2 minutes.
+   (While streaming, the picture must fill the TV with no black bars: the ultrawide switches to the TV's mode and
+   back when the stream ends.)
 2. On the TV pick **Steam Big Picture**. TV shows "Waking up the game PC" with seconds counting.
 3. Big Picture appears on the TV. Time from the press: ____ s (must be <= 90).
 4. Quit to the launcher (item 5), pick **Steam Big Picture** again: ____ s (must be <= 10).

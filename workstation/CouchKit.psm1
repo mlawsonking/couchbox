@@ -30,7 +30,7 @@ function Write-CouchPlan {
 # ------------------------------------------------------------------ files
 function Write-Utf8NoBom {
     # Sunshine's JSON reader must not see a BOM; Set-Content -Encoding UTF8 in 5.1 writes one.
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Text)
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
     $enc = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Text, $enc)
 }
@@ -333,6 +333,223 @@ function Register-CouchProbeTask {
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName 'couchbox iperf3' -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
     Start-ScheduledTask -TaskName 'couchbox iperf3'
+}
+
+
+# ------------------------------------------------------------------ stream display (Sunshine global prep-cmd)
+function Select-StreamMode {
+    # Picks the primary-display mode for a client asking for Width x Height @ Fps. Pure (Pester-tested).
+    # 1) exact WxH at the requested refresh; 2) exact WxH at the highest refresh <= Fps (else the lowest above);
+    # 3) the largest mode with the client's aspect ratio (+-1%) that fits inside WxH; 4) $null = leave the display.
+    param([Parameter(Mandatory = $true)][object[]]$Modes, [Parameter(Mandatory = $true)][int]$Width,
+          [Parameter(Mandatory = $true)][int]$Height, [int]$Fps = 60)
+    if ($Width -le 0 -or $Height -le 0) { return $null }
+    $same = @($Modes | Where-Object { $_.Width -eq $Width -and $_.Height -eq $Height })
+    if ($same.Count -gt 0) {
+        $exact = @($same | Where-Object { $_.Refresh -eq $Fps })
+        if ($exact.Count -gt 0) { return $exact[0] }
+        $below = @($same | Where-Object { $_.Refresh -le $Fps } | Sort-Object -Property Refresh -Descending)
+        if ($below.Count -gt 0) { return $below[0] }
+        return @($same | Sort-Object -Property Refresh)[0]
+    }
+    $aspect = $Width / [double]$Height
+    $fit = @($Modes | Where-Object {
+            $_.Width -le $Width -and $_.Height -le $Height -and [math]::Abs(($_.Width / [double]$_.Height) - $aspect) -le ($aspect * 0.01)
+        })
+    if ($fit.Count -eq 0) { return $null }
+    $bestArea = ($fit | ForEach-Object { $_.Width * $_.Height } | Measure-Object -Maximum).Maximum
+    $biggest = @($fit | Where-Object { ($_.Width * $_.Height) -eq $bestArea })
+    $atFps = @($biggest | Where-Object { $_.Refresh -le $Fps } | Sort-Object -Property Refresh -Descending)
+    if ($atFps.Count -gt 0) { return $atFps[0] }
+    return @($biggest | Sort-Object -Property Refresh)[0]
+}
+
+function Test-SameMode {
+    param($A, $B)
+    if ($null -eq $A -or $null -eq $B) { return $false }
+    return ($A.Width -eq $B.Width -and $A.Height -eq $B.Height -and $A.Refresh -eq $B.Refresh)
+}
+
+function Get-StreamDisplayPlan {
+    # Decides what do/undo/restore must do from the saved state and the current mode. Pure (Pester-tested).
+    # Returns @{ SetMode = <mode or $null>; SaveState = <mode or $null>; ClearState = <bool>; Message = <text> }.
+    # Invariants: the saved state always holds the user's ORIGINAL mode - a second "do" (or a "do" after a crash
+    # left the state behind) never overwrites it; "undo" with no state is a no-op.
+    param([Parameter(Mandatory = $true)][ValidateSet('do', 'undo', 'restore')][string]$Action,
+          $State, $Current, $Selected)
+    $plan = @{ SetMode = $null; SaveState = $null; ClearState = $false; Message = '' }
+    if ($Action -eq 'do') {
+        if ($null -eq $Selected) { $plan.Message = 'no suitable mode for the client; display left as is'; return $plan }
+        if ($null -eq $State) {
+            if (Test-SameMode $Current $Selected) { $plan.Message = 'display already in the stream mode'; return $plan }
+            $plan.SaveState = $Current
+        }
+        if (-not (Test-SameMode $Current $Selected)) { $plan.SetMode = $Selected }
+        $plan.Message = ('stream mode {0}x{1}@{2}' -f $Selected.Width, $Selected.Height, $Selected.Refresh)
+        return $plan
+    }
+    if ($null -eq $State) { $plan.Message = 'nothing to restore'; return $plan }
+    if (-not (Test-SameMode $Current $State)) { $plan.SetMode = $State }
+    $plan.ClearState = $true
+    $plan.Message = ('restore {0}x{1}@{2}' -f $State.Width, $State.Height, $State.Refresh)
+    return $plan
+}
+
+function Read-StreamDisplayState {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try {
+        $o = [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json
+        return [pscustomobject]@{ Width = [int]$o.Width; Height = [int]$o.Height; Refresh = [int]$o.Refresh }
+    } catch { return $null }
+}
+
+function Write-StreamDisplayState {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)]$Mode)
+    $o = [ordered]@{ Width = [int]$Mode.Width; Height = [int]$Mode.Height; Refresh = [int]$Mode.Refresh; saved = (Get-Date).ToString('s') }
+    Write-Utf8NoBom -Path $Path -Text ($o | ConvertTo-Json -Depth 3)
+}
+
+function Initialize-CouchDisplayApi {
+    # P/Invoke for EnumDisplaySettings / ChangeDisplaySettingsEx on the PRIMARY display (hardware-only code path).
+    if ('CouchDisplay' -as [type]) { return }
+    Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class CouchDisplay {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    public struct DEVMODE {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+        public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+        public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+        public short dmTTOption; public short dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+        public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+        public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+        public int dmPanningWidth; public int dmPanningHeight;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+    public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+    [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+    public static extern int ChangeDisplaySettingsEx(string deviceName, ref DEVMODE devMode, IntPtr hwnd, int flags, IntPtr lParam);
+    public const int ENUM_CURRENT_SETTINGS = -1;
+    public const int DM_PELSWIDTH = 0x80000, DM_PELSHEIGHT = 0x100000, DM_DISPLAYFREQUENCY = 0x400000;
+    public static DEVMODE New() { DEVMODE d = new DEVMODE(); d.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE)); return d; }
+    public static List<int[]> Modes() {
+        List<int[]> r = new List<int[]>(); DEVMODE d = New(); int i = 0;
+        while (EnumDisplaySettings(null, i, ref d)) { r.Add(new int[] { d.dmPelsWidth, d.dmPelsHeight, d.dmDisplayFrequency }); i++; }
+        return r;
+    }
+    public static int[] Current() { DEVMODE d = New(); EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref d); return new int[] { d.dmPelsWidth, d.dmPelsHeight, d.dmDisplayFrequency }; }
+    public static int Set(int w, int h, int hz) {
+        DEVMODE d = New(); EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref d);
+        d.dmPelsWidth = w; d.dmPelsHeight = h; d.dmDisplayFrequency = hz;
+        d.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+        return ChangeDisplaySettingsEx(null, ref d, IntPtr.Zero, 0, IntPtr.Zero);
+    }
+}
+"@
+}
+
+function Get-CouchDisplayModes {
+    Initialize-CouchDisplayApi
+    $seen = @{}
+    $out = @()
+    foreach ($m in [CouchDisplay]::Modes()) {
+        $k = '{0}x{1}@{2}' -f $m[0], $m[1], $m[2]
+        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $out += [pscustomobject]@{ Width = $m[0]; Height = $m[1]; Refresh = $m[2] } }
+    }
+    return $out
+}
+
+function Get-CouchCurrentMode {
+    Initialize-CouchDisplayApi
+    $m = [CouchDisplay]::Current()
+    return [pscustomobject]@{ Width = $m[0]; Height = $m[1]; Refresh = $m[2] }
+}
+
+function Set-CouchDisplayMode {
+    # Non-persistent change (flags 0 = this session); returns DISP_CHANGE_* (0 = success).
+    param([Parameter(Mandatory = $true)]$Mode)
+    Initialize-CouchDisplayApi
+    return [CouchDisplay]::Set([int]$Mode.Width, [int]$Mode.Height, [int]$Mode.Refresh)
+}
+
+# ------------------------------------------------------------------ sunshine.conf (global_prep_cmd)
+function Merge-SunshineConf {
+    # Adds one global_prep_cmd entry to sunshine.conf text, keeping every other line and any existing prep
+    # commands. Returns @{ Text = <new text>; Changed = <bool> }. Pure (Pester-tested).
+    param([AllowEmptyString()][string]$Text, [Parameter(Mandatory = $true)][string]$Do,
+          [Parameter(Mandatory = $true)][string]$Undo, [string]$Marker = 'Set-StreamDisplay.ps1')
+    $entry = [ordered]@{ 'do' = $Do; 'undo' = $Undo; 'elevated' = $false }
+    $lines = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrEmpty($Text)) { foreach ($l in ($Text -split "`r?`n")) { $lines.Add($l) } }
+    while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') { $lines.RemoveAt($lines.Count - 1) }
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*global_prep_cmd\s*=\s*(.*)$') {
+            $raw = $Matches[1].Trim()
+            $arr = @()
+            if ($raw) { $arr = @($raw | ConvertFrom-Json) }
+            foreach ($e in $arr) { if ([string]$e.do -like ('*' + $Marker + '*')) { return @{ Text = $Text; Changed = $false } } }
+            $all = @($arr) + @([pscustomobject]$entry)
+            $lines[$i] = 'global_prep_cmd = ' + (ConvertTo-Json -InputObject $all -Depth 5 -Compress)
+            return @{ Text = (($lines -join "`r`n") + "`r`n"); Changed = $true }
+        }
+    }
+    $lines.Add('global_prep_cmd = ' + (ConvertTo-Json -InputObject @([pscustomobject]$entry) -Depth 5 -Compress))
+    return @{ Text = (($lines -join "`r`n") + "`r`n"); Changed = $true }
+}
+
+function Get-CouchLinkInfo {
+    # Link speed + the Realtek power-saving properties that can downshift a gigabit link (report only).
+    $names = @('Gigabit Lite', 'Energy-Efficient Ethernet', 'Power Saving Mode', 'Green Ethernet', 'Advanced EEE')
+    $out = @()
+    foreach ($a in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+        $props = @{}
+        foreach ($p in (Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction SilentlyContinue)) {
+            if ($names -contains [string]$p.DisplayName) { $props[[string]$p.DisplayName] = [string]$p.DisplayValue }
+        }
+        $out += [pscustomobject]@{ Name = $a.Name; LinkSpeed = [string]$a.LinkSpeed; Media = [string]$a.MediaType; Props = $props }
+    }
+    return $out
+}
+
+function Get-LinkRecommendation {
+    # Pure: turns Get-CouchLinkInfo output into advice lines. Never a failure - the owner decides (facts: the
+    # Realtek NIC once linked at 100 Mbps with Gigabit Lite / EEE / Power Saving on).
+    param([object[]]$Links)
+    $lines = @()
+    foreach ($l in $Links) {
+        $line = $l.Name + ': link ' + $l.LinkSpeed
+        $on = @()
+        foreach ($k in ($l.Props.Keys | Sort-Object)) { if ($l.Props[$k] -match '^(Enabled|On)$') { $on += $k } }
+        if ($l.LinkSpeed -match '^(10|100) Mbps$') { $line += ' - below gigabit: check the cable/port' }
+        if ($on.Count -gt 0) { $line += '; consider turning off ' + ($on -join ', ') + ' (can downshift the link; your call, the kit never changes it)' }
+        $lines += $line
+    }
+    return $lines
+}
+
+
+function Get-CouchRestoreTask {
+    return Get-ScheduledTask -TaskName 'couchbox display restore' -ErrorAction SilentlyContinue
+}
+
+function Register-CouchRestoreTask {
+    # At logon of the current user: put the display back if a stream ended without Sunshine's undo (crash, reboot).
+    param([Parameter(Mandatory = $true)][string]$ScriptPath)
+    $arg = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $ScriptPath + '" restore'
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Environment]::UserDomainName + '\' + [Environment]::UserName)
+    Register-ScheduledTask -TaskName 'couchbox display restore' -Action $action -Trigger $trigger | Out-Null
+}
+
+function Get-StreamDisplayCommand {
+    param([Parameter(Mandatory = $true)][string]$ScriptPath, [Parameter(Mandatory = $true)][string]$Verb)
+    return 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $ScriptPath + '" ' + $Verb
 }
 
 Export-ModuleMember -Function *
