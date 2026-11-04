@@ -18,8 +18,9 @@ the game returns to the launcher; it keeps working for months with nobody touchi
   the fallback before the launcher exists.
 - Daemon: Python stdlib only. Actions on 127.0.0.1:7777 (allow-list), `/health` read-only on the LAN.
 - Workstation kit: PowerShell **5.1-compatible, pure ASCII**, dry-run by default, `-Apply` to change. Michael runs it.
-- Gamepad (corrected 2026-11-03): the dongle is a **generic 2.4 GHz gamepad receiver** (likely ACRUX 1A34:F517, "Xbox
-  style" layout), NOT Microsoft's adapter. Primary path = the kernel's generic HID gamepad support + **SDL2's controller
+- Gamepad (CONFIRMED 2026-11-03 on the workstation): the generic 2.4 GHz receiver enumerates as **USB 045E:028E 'Xbox 360
+  Controller for Windows'** (XInput). On Linux the in-kernel **xpad** driver claims it, SDL2 maps it out of the box: no extra driver,
+  no mapping screen for this pad. NOT Microsoft's Xbox Wireless Adapter. Primary path = the kernel's generic HID gamepad support + **SDL2's controller
   database**, with these requirements: (a) `couch-doctor` prints every /dev/input device with its SDL GUID, name and
   whether SDL has a mapping; (b) an unmapped device gets a one-time, PIN-free **button-mapping screen** on first run
   only (press A, B, X, Y, D-pad, sticks, Start, Back as prompted) that writes an `SDL_GAMECONTROLLERCONFIG` line to
