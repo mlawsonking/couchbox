@@ -18,16 +18,27 @@ the game returns to the launcher; it keeps working for months with nobody touchi
   the fallback before the launcher exists.
 - Daemon: Python stdlib only. Actions on 127.0.0.1:7777 (allow-list), `/health` read-only on the LAN.
 - Workstation kit: PowerShell **5.1-compatible, pure ASCII**, dry-run by default, `-Apply` to change. Michael runs it.
-- Gamepad: **xone** DKMS (Xbox Wireless Adapter dongle) + Bluetooth (xpadneo) fallback + wired (in-kernel xpad). All
-  three paths must be exercised in code and in `couch-doctor`.
+- Gamepad (CONFIRMED 2026-11-03 on the workstation): the generic 2.4 GHz receiver enumerates as **USB 045E:028E 'Xbox 360
+  Controller for Windows'** (XInput). On Linux the in-kernel **xpad** driver claims it, SDL2 maps it out of the box: no extra driver,
+  no mapping screen for this pad. NOT Microsoft's Xbox Wireless Adapter. Primary path = the kernel's generic HID gamepad support + **SDL2's controller
+  database**, with these requirements: (a) `couch-doctor` prints every /dev/input device with its SDL GUID, name and
+  whether SDL has a mapping; (b) an unmapped device gets a one-time, PIN-free **button-mapping screen** on first run
+  only (press A, B, X, Y, D-pad, sticks, Start, Back as prompted) that writes an `SDL_GAMECONTROLLERCONFIG` line to
+  `/etc/couch/gamepads.txt`, which is loaded on every start - after that the screen is reachable only from the
+  PIN-gated menu; (c) a udev rule granting the `couch` user access to hidraw/input devices; (d) hot-plug and
+  controller-off/on without restart. Keep xone (Microsoft adapter) and xpadneo (Bluetooth) as optional installer
+  extras (`--with-xone`, `--with-xpadneo`), not defaults; wired USB (in-kernel xpad / hid-generic) always works. All
+  paths exercised in code (synthetic SDL devices) and in `couch-doctor`.
 - Box art: Steam public CDN by appid (no key), fallback generated title cards. No keyed or metered service anywhere.
 - Network reality: the workstation is in the garage, the NUC ~100 ft away in the living room, no cable run - at least one
   hop crosses a 1st-gen Google Wifi mesh that also carries a busy media server. So: default **1080p60 HEVC ~15 Mbps**, a
   config quality ladder (720p60 10 -> 1080p60 15/20 -> 1440p60 30 -> 4K60 40 Mbps), `couch-doctor` measures jitter/loss/
   throughput to the host (iperf3 on the workstation, installed LAN-only by the kit), and the launcher shows a
   link-quality badge (jitter > 10 ms or loss > 0.5%). Never assume a wired path.
-- Hardware unknowns (NUC model, iGPU generation, TV caps) are NOT known yet: everything adapts at install time via
-  `couch-doctor` (vainfo decode caps -> default display mode), nothing is hard-coded to a model.
+- NUC (known 2026-11-03): **Intel NUC7i5BNK** - i5-7260U Kaby Lake, Iris Plus 640 (Gen9.5): HEVC 8/10-bit 4K60 + H.264 + VP9
+  hardware decode, NO AV1, HDMI 2.0a (4K60 max), I219-V gigabit, Wireless-AC 8265 + BT 4.2, one M.2 SSD, 4x USB-A. See
+  `facts/lan-facts.json` nuc. RAM/SSD sizes and TV caps still unknown: everything STILL adapts at install time via
+  `couch-doctor` (vainfo decode caps -> default display mode); nothing is hard-coded to the model. AV1/HDR off in v1.
 
 ## Phases (each ends in a PR; CI green before you open it)
 ### P1 - Bootable kiosk with the fallback built in
@@ -87,6 +98,17 @@ the game returns to the launcher; it keeps working for months with nobody touchi
   encoder present).
 - `Install-LinkProbe.ps1 [-Apply]`: iperf3 via winget as a scheduled task bound to the LAN interface, firewall rule for
   TCP 5201 from the private LAN only, so `couch-doctor` can measure the garage-to-living-room path.
+- `Set-StreamDisplay.ps1 do|undo`: the host's PRIMARY monitor is a 3440x1440 ultrawide and Sunshine captures the primary,
+  so a 16:9 TV would be letterboxed. Ship a Sunshine **global prep-cmd** pair (`do` = switch the primary to the stream
+  resolution/refresh passed by Moonlight via Sunshine's `SUNSHINE_CLIENT_WIDTH/HEIGHT/FPS` env vars, `undo` = restore the
+  saved mode) using `ChangeDisplaySettingsEx` via Add-Type P/Invoke, idempotent, with the saved mode in a state file and a
+  safety restore on service start. Pester-test the mode selection and state handling; the P/Invoke call itself is
+  hardware-only (say so). Document the virtual-display-driver alternative in the RUNBOOK but do not install one.
+- Facts already known about the host (facts/lan-facts.json "workstation"): Sunshine 2026.516.x already installed and
+  running with an EMPTY sunshine.conf and two existing apps ("Desktop", "Steam Big Picture") - the merge keeps both;
+  Steam has two library folders (28 manifests incl. tools); the host NIC links at 1 Gbps (an earlier read saw 100 Mbps
+  from a Realtek downshift feature) - no host-side cap, the ladder is governed by the measured path, and the doctor
+  reports the link speed.
 - Tests: Pester (pwsh in CI) with fixture `.acf`/`.vdf`/`apps.json`; dry-run writes nothing; PS5.1 syntax lint
   (no `??`, `?.`, ternary, `-notlike` on arrays, no Unicode).
 
