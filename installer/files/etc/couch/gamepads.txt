@@ -1,0 +1,2 @@
+# couchbox gamepad mappings (SDL_GAMECONTROLLERCONFIG lines). Written by the first-run mapping screen;
+# loaded by the launcher on every start. One line per pad GUID.

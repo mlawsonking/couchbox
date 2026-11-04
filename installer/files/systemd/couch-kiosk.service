@@ -34,7 +34,7 @@ UtmpMode=user
 # Hardening that does not break DRM/input/audio access.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/couch /var/log/couch
+ReadWritePaths=/var/lib/couch /var/log/couch /etc/couch/gamepads.txt
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelModules=yes

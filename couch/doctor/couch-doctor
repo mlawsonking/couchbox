@@ -126,55 +126,110 @@ def usb_ids() -> set[tuple[str, str]]:
     return ids
 
 
+def sdl_guid(bus: int, vendor: int, product: int, version: int) -> str:
+    """SDL2 Linux joystick GUID as SDL's controller database writes it (name-CRC field zeroed)."""
+    return "".join(f"{w & 0xFF:02x}{(w >> 8) & 0xFF:02x}" for w in (bus, 0, vendor, 0, product, 0, version, 0))
+
+
+def saved_mappings() -> dict:
+    out = {}
+    for line in read("/etc/couch/gamepads.txt").splitlines():
+        parts = line.strip().split(",")
+        if len(parts) >= 3 and re.fullmatch(r"[0-9a-fA-F]{32}", parts[0]):
+            g = parts[0].lower()
+            out[g[:4] + "0000" + g[8:]] = parts[1]
+    return out
+
+
+SDL_CODE = """
+import json, os
+os.environ['SDL_VIDEODRIVER'] = 'dummy'
+os.environ['SDL_AUDIODRIVER'] = 'dummy'
+try:
+    lines = [l.strip() for l in open('/etc/couch/gamepads.txt') if l.strip() and not l.startswith('#')]
+    if lines:
+        os.environ['SDL_GAMECONTROLLERCONFIG'] = chr(10).join(lines)
+except OSError:
+    pass
+import pygame
+from pygame._sdl2 import controller
+pygame.init(); pygame.joystick.init(); controller.init()
+out = []
+for i in range(pygame.joystick.get_count()):
+    j = pygame.joystick.Joystick(i)
+    out.append({'name': j.get_name(), 'guid': j.get_guid(), 'mapped': bool(controller.is_controller(i))})
+print(json.dumps(out))
+"""
+
+
 def sdl_controllers() -> dict:
+    """SDL's own view (the launcher's): every joystick with GUID and whether SDL maps it (built-in DB or
+    /etc/couch/gamepads.txt). This is the authoritative mapped/unmapped answer when the launcher venv exists."""
     py = p("/opt/couch/venv/bin/python")
     if not os.path.exists(py):
-        return {"status": SKIP, "note": "launcher venv not installed yet (P2); SDL enumeration skipped"}
-    code = ("import os;os.environ['SDL_VIDEODRIVER']='dummy';import pygame;pygame.init();pygame.joystick.init();"
-            "import json;print(json.dumps([pygame.joystick.Joystick(i).get_name() "
-            "for i in range(pygame.joystick.get_count())]))")
-    rc, out = run([py, "-c", code], timeout=15)
+        return {"status": SKIP, "note": "launcher venv not installed; SDL enumeration skipped"}
+    rc, out = run([py, "-c", SDL_CODE], timeout=20)
     if rc != 0:
         return {"status": YELLOW, "note": f"SDL enumeration failed (rc {rc})", "output": out[-400:]}
     try:
-        names = json.loads(out.strip().splitlines()[-1])
+        devices = json.loads(out.strip().splitlines()[-1])
     except (ValueError, IndexError):
         return {"status": YELLOW, "note": "SDL enumeration printed nothing parseable"}
-    return {"status": GREEN if names else YELLOW, "controllers": names}
+    return {"status": GREEN, "devices": devices}
 
 
 def check_gamepad() -> dict:
-    devs = input_devices()
-    pads = [d for d in devs if any(h.startswith("js") for h in d.get("handlers", []))]
+    """Primary path: kernel generic gamepad drivers (xpad for XInput-class receivers, hid-generic otherwise) +
+    SDL's controller DB / gamepads.txt. xone (Microsoft adapter) and xpadneo (Bluetooth) only if installed."""
+    saved = saved_mappings()
+    pads = []
+    for d in input_devices():
+        if not any(h.startswith("js") for h in d.get("handlers", [])):
+            continue
+        i = d.get("id", {})
+        try:
+            guid = sdl_guid(int(i.get("Bus", "0"), 16), int(i.get("Vendor", "0"), 16), int(i.get("Product", "0"), 16),
+                            int(i.get("Version", "0"), 16))
+        except ValueError:
+            guid = None
+        pads.append({"name": d.get("name"), "guid": guid, "vid_pid": f"{i.get('Vendor')}:{i.get('Product')}",
+                     "handlers": d.get("handlers"), "mapped": "gamepads.txt" if guid in saved else "unknown"})
+    sdl = sdl_controllers()
+    by_guid = {}
+    for sd in sdl.get("devices", []):
+        g = (sd.get("guid") or "").lower()
+        by_guid[g[:4] + "0000" + g[8:]] = sd
+    for pad in pads:
+        sd = by_guid.get(pad["guid"] or "")
+        if sd is not None:
+            pad["mapped"] = "yes" if sd.get("mapped") else "NO - mapping screen on first run"
     usb = usb_ids()
-    dongle_present = any(v == "045e" and pid in DONGLE_PIDS for v, pid in usb)
+    ms_adapter = any(v == "045e" and pid in DONGLE_PIDS for v, pid in usb)
+    xone_installed = bool(glob.glob(p("/usr/src/xone-*")))
     hci = sorted(os.path.basename(x) for x in glob.glob(p("/sys/class/bluetooth/hci*")))
     paths = {
-        "dongle": {"driver": "xone_dongle", "loaded": module_loaded("xone_dongle"), "adapter_plugged": dongle_present,
-                   "firmware": sorted(os.path.basename(f) for f in glob.glob(p("/lib/firmware/xone_dongle_*.bin")))},
-        "bluetooth": {"driver": "hid_xpadneo", "loaded": module_loaded("hid_xpadneo"), "adapters": hci},
-        "wired": {"driver": "xone_wired" if module_loaded("xone_wired") else "xpad",
-                  "loaded": module_loaded("xone_wired") or module_loaded("xpad")},
+        "generic": {"drivers": [m for m in ("xpad", "hid_generic", "usbhid") if module_loaded(m)],
+                    "note": "kernel generic gamepad support + SDL controller DB (primary)"},
+        "xone": {"installed": xone_installed, "loaded": module_loaded("xone_dongle"), "ms_adapter_plugged": ms_adapter,
+                 "firmware": sorted(os.path.basename(f) for f in glob.glob(p("/lib/firmware/xone_dongle_*.bin")))},
+        "bluetooth": {"xpadneo_loaded": module_loaded("hid_xpadneo"), "adapters": hci},
     }
-    detail = {"paths": paths, "joysticks": [{"name": d.get("name"), "handlers": d.get("handlers")} for d in pads],
-              "sdl": sdl_controllers()}
+    detail = {"paths": paths, "devices": pads, "sdl": sdl}
     problems = []
-    if dongle_present and not paths["dongle"]["loaded"]:
-        problems.append("Xbox adapter plugged in but xone_dongle is not loaded")
-    if dongle_present and not paths["dongle"]["firmware"]:
-        problems.append("Xbox adapter firmware missing")
+    if ms_adapter and not xone_installed:
+        problems.append("a Microsoft Xbox Wireless Adapter is plugged in: re-run install.sh with --with-xone")
+    elif ms_adapter and not paths["xone"]["loaded"]:
+        problems.append("Microsoft adapter plugged in but xone_dongle is not loaded")
+    unmapped = [x for x in pads if x["mapped"].startswith("NO")]
+    if unmapped:
+        problems.append("unmapped: " + ", ".join(f"{x['name']} ({x['guid']})" for x in unmapped))
     if pads:
-        names = ", ".join(sorted({d.get("name") or "?" for d in pads}))
-        status = YELLOW if problems else GREEN
-        return result("gamepad", status, f"{len(pads)} gamepad(s): {names}" + (f"; {'; '.join(problems)}"
-                                                                              if problems else ""), detail)
+        names = "; ".join(f"{x['name']} [{x['vid_pid']}] guid {x['guid']} mapped {x['mapped']}" for x in pads)
+        return result("gamepad", YELLOW if problems else GREEN, f"{len(pads)} gamepad(s): {names}" +
+                      (f"; {'; '.join(problems)}" if problems else ""), detail)
     if problems:
-        return result("gamepad", RED, "; ".join(problems), detail)
-    any_driver = paths["dongle"]["loaded"] or (paths["bluetooth"]["loaded"] and hci) or paths["wired"]["loaded"]
-    if not any_driver and not dongle_present:
-        return result("gamepad", YELLOW, "no gamepad connected and no gamepad driver loaded yet "
-                                         "(they load when a pad or the adapter is plugged in)", detail)
-    return result("gamepad", YELLOW, "no gamepad connected - turn the controller on (Xbox button)", detail)
+        return result("gamepad", YELLOW, "; ".join(problems), detail)
+    return result("gamepad", YELLOW, "no gamepad connected - turn the controller on", detail)
 
 
 # ------------------------------------------------------------------ decode caps
@@ -190,10 +245,12 @@ def parse_vainfo(text: str) -> dict:
         "av1": any(x.startswith("VAProfileAV1") for x in vld),
     }
     m = re.search(r"Driver version:\s*(.+)", text)
-    # Decode generation heuristic only bounds the mode; the measured network link decides the default rung.
-    if caps["av1"] or caps["hevc10"]:
+    # vainfo is the final word (no model is hard-coded). The 4K60 rung is HEVC-only, so HEVC Main decode is what
+    # unlocks it; AV1 decode is reported but never required (AV1 is off by default). The measured link then picks
+    # the rung within this ceiling.
+    if caps["hevc"]:
         ceiling = "4k60"
-    elif caps["hevc"] or caps["h264"]:
+    elif caps["h264"]:
         ceiling = "1080p60"
     else:
         ceiling = None
@@ -294,12 +351,14 @@ def parse_ping(text: str) -> dict:
             "rtt_max_ms": max(times) if times else None, "jitter_ms": round(jitter, 2) if jitter is not None else None}
 
 
-def recommend_rung(mbps: float | None, jitter: float | None, loss: float | None) -> str:
-    """Highest ladder rung whose bitrate is at most half the measured throughput; one rung lower on a jittery
-    or lossy link. Without a measurement the default 1080p60 15 Mbps stays."""
+def recommend_rung(mbps: float | None, jitter: float | None, loss: float | None, ceiling: str | None = "4k60") -> str:
+    """Highest ladder rung whose bitrate is at most half the measured throughput (no host-side cap: the host NIC
+    is gigabit), one rung lower on a jittery or lossy link, never above what this box can decode (vainfo ceiling:
+    4K60 needs HEVC decode). Without a measurement the default 1080p60 15 Mbps stays."""
     if mbps is None:
         return "1080p60-15"
-    names = [n for n, kbps in LADDER if kbps / 1000.0 <= mbps / 2.0] or ["720p60-10"]
+    allowed = [(n, k) for n, k in LADDER if ceiling == "4k60" or not n.startswith(("4k", "1440p"))]
+    names = [n for n, kbps in allowed if kbps / 1000.0 <= mbps / 2.0] or ["720p60-10"]
     rung = names[0]
     if (jitter or 0) > JITTER_BAD_MS or (loss or 0) > LOSS_BAD_PCT:
         order = [n for n, _ in LADDER]
@@ -350,7 +409,10 @@ def check_network(measure: bool = False) -> dict:
         except (OSError, ValueError):
             detail["throughput_mbps"] = None
     link_bad = (pg["jitter_ms"] or 0) > JITTER_BAD_MS or pg["loss_pct"] > LOSS_BAD_PCT
-    rung = recommend_rung(detail["throughput_mbps"], pg["jitter_ms"], pg["loss_pct"])
+    _, vout = run(["vainfo", "--display", "drm"])
+    ceiling = parse_vainfo(vout)["decode_ceiling"]
+    detail["decode_ceiling"] = ceiling
+    rung = recommend_rung(detail["throughput_mbps"], pg["jitter_ms"], pg["loss_pct"], ceiling)
     detail.update(link_bad=link_bad, rung=rung, path=",".join(sorted({i["kind"] for i in up})))
     if measure and detail.get("throughput_mbps") is not None:
         try:

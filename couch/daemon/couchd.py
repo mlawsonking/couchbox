@@ -181,11 +181,7 @@ class Core:
         if app not in apps:
             return 403, {"ok": False, "error": "app is not in moonlight-qt list", "apps": apps,
                          "list_error": self.apps_error}
-        res, fps, kbps = self.cfg.stream_params(self.measured_rung())
-        argv = [self.moonlight, "stream", self.stream_target(), app, "--quit-after", "--display-mode", "fullscreen",
-                "--resolution", res, "--fps", str(fps), "--bitrate", str(kbps), "--video-decoder", "hardware"]
-        if self.cfg.codec != "auto":
-            argv += ["--video-codec", self.cfg.codec]
+        argv = self.cfg.stream_argv(self.moonlight, self.stream_target(), app, self.measured_rung())
         if launch:
             self.queue({"action": "stream", "app": app})
         return 200, {"ok": True, "argv": argv}

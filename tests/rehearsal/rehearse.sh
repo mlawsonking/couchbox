@@ -1,7 +1,7 @@
 #!/bin/bash
 # Container rehearsal of installer/install.sh inside a pristine ubuntu:24.04.
 #   tests/rehearsal/rehearse.sh [plain|systemd]
-# plain   : --no-services --no-dkms; asserts every file/dir/user lands, 2nd run = "changes: 0", dry-run = 0 planned.
+# plain   : --no-services (no optional DKMS drivers); asserts every file/dir/user lands, 2nd run = "changes: 0", dry-run = 0 planned.
 # systemd : systemd installed but not PID 1 (like the autoinstall chroot); asserts getty mask, enabled units,
 #           first-boot marker, systemd-analyze verify of the couch units, and idempotence.
 # Uses a fake moonlight-qt AppImage (pinned by its own sha256) so no 54 MB download happens in CI.

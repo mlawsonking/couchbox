@@ -18,6 +18,11 @@ custom_bitrate_kbps = 15000
 [pair]
 policy = "menu"                # menu = Pair is offered in the Start menu; "off" hides it
 
+[gamepad]
+# A pad SDL does not recognise gets a one-time button-mapping screen when first plugged in. To redo it later, set a
+# 4-digit code here: Menu > "Set up a controller" then asks for it (entered with the D-pad). Empty = hidden.
+setup_pin = ""
+
 [maintenance]
 nightly_reboot = "04:30"       # "" disables
 ntfy_url = ""                  # optional, e.g. https://ntfy.example/topic ; only POSTed when doctor is red

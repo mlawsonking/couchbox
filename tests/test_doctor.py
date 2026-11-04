@@ -51,17 +51,19 @@ def test_good_is_green(doctor):
     assert c["decode"]["detail"]["recommended_codec"] == "HEVC"
     assert c["decode"]["detail"]["decode_ceiling"] == "4k60"
     paths = c["gamepad"]["detail"]["paths"]
-    assert set(paths) == {"dongle", "bluetooth", "wired"}  # all three gamepad paths reported
-    assert paths["dongle"]["adapter_plugged"] and paths["dongle"]["loaded"]
+    assert set(paths) == {"generic", "xone", "bluetooth"}  # every gamepad path reported
+    assert "xpad" in paths["generic"]["drivers"] and paths["xone"]["installed"] is False
     assert paths["bluetooth"]["adapters"] == ["hci0"]
-    assert paths["wired"]["driver"] == "xone_wired"
+    dev = c["gamepad"]["detail"]["devices"][0]
+    assert dev["vid_pid"] == "045e:028e" and dev["guid"] == "030000005e0400008e02000014010000"
     assert c["gamepad"]["detail"]["sdl"]["status"] == "skip"
 
 
 @pytest.mark.parametrize("variant,check,status,words", [
     ("nodisplay", "display", "red", "no TV detected"),
     ("nopad", "gamepad", "yellow", "turn the controller on"),
-    ("dongle_nodriver", "gamepad", "red", "xone_dongle is not loaded"),
+    ("ms_adapter_noxone", "gamepad", "yellow", "--with-xone"),
+    ("ms_adapter_unloaded", "gamepad", "yellow", "xone_dongle is not loaded"),
     ("h264only", "decode", "yellow", "H264"),
     ("nogpu", "decode", "red", "no GPU render node"),
 ])
@@ -201,3 +203,38 @@ def test_disk_thresholds(doctor, monkeypatch, free, status):
     d = doctor("good")
     monkeypatch.setattr(d.shutil, "disk_usage", lambda path: Usage(100_000_000_000, 100_000_000_000 - free, free))
     assert by_name(d.run_all())["disk"]["status"] == status
+
+
+def test_nuc7i5bnk_decode_from_vainfo_not_model(doctor):
+    """Gen9.5 iHD output: HEVC unlocks the 4K60 ceiling, AV1 reported absent, codec HEVC - decided by vainfo."""
+    c = by_name(doctor("nuc7").run_all())["decode"]
+    d = c["detail"]
+    assert c["status"] == "green" and d["caps"]["av1"] is False and d["caps"]["hevc10"] is True
+    assert d["decode_ceiling"] == "4k60" and d["recommended_codec"] == "HEVC" and "iHD" in d["driver"]
+
+
+@pytest.mark.parametrize("mbps,ceiling,rung", [(200, "4k60", "4k60-40"), (200, "1080p60", "1080p60-20"),
+                                               (85, "4k60", "4k60-40"), (79, "4k60", "1440p60-30")])
+def test_rung_capped_by_decode_and_no_host_cap(mbps, ceiling, rung):
+    """No host-side bitrate cap: gigabit host + >= 80 Mbps measured reaches 4K60 40 Mbps when HEVC decode exists."""
+    d = load_script("couch/doctor/couch-doctor", "couch_doctor5")
+    assert d.recommend_rung(mbps, 2, 0, ceiling) == rung
+
+
+def test_sdl_view_marks_mapped_and_unmapped(doctor):
+    """With the launcher venv present, SDL's own answer decides mapped/unmapped (GUID CRC field ignored)."""
+    c = by_name(doctor("sdl").run_all())["gamepad"]
+    assert c["status"] == "green" and c["detail"]["devices"][0]["mapped"] == "yes"
+    c = by_name(doctor("unmapped").run_all())["gamepad"]
+    assert c["status"] == "yellow"
+    gen = [x for x in c["detail"]["devices"] if x["vid_pid"] == "0079:18d4"][0]
+    assert gen["guid"] == "0300000079000000d418000010010000" and gen["mapped"].startswith("NO")
+    assert "unmapped: Generic 2.4G Gamepad" in c["summary"]
+
+
+def test_saved_mapping_counts_as_mapped_without_sdl(doctor):
+    d = doctor("good")
+    with open(os.path.join(d.SYSROOT, "etc/couch/gamepads.txt"), "w") as fh:
+        fh.write("# c\n030000005e0400008e02000014010000,X360,a:b0,platform:Linux,\n")
+    c = by_name(d.run_all())["gamepad"]
+    assert c["detail"]["devices"][0]["mapped"] == "gamepads.txt"

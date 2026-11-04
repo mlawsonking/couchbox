@@ -26,9 +26,9 @@ BAD = (213, 94, 0)            # vermillion
 INFO = (86, 180, 233)         # sky blue
 CARD_HUES = [(0, 114, 178), (0, 158, 115), (204, 121, 167), (230, 159, 0), (86, 180, 233), (213, 94, 0)]
 
-HOME, WAKING, CONNECTING, STREAMING, LOST, PAIR, MENU = (
-    "HOME", "WAKING", "CONNECTING", "STREAMING", "LOST", "PAIR", "MENU")
-SCREENS = (HOME, WAKING, CONNECTING, STREAMING, LOST, PAIR, MENU)
+HOME, WAKING, CONNECTING, STREAMING, LOST, PAIR, MENU, MAPPING, PIN = (
+    "HOME", "WAKING", "CONNECTING", "STREAMING", "LOST", "PAIR", "MENU", "MAPPING", "PIN")
+SCREENS = (HOME, WAKING, CONNECTING, STREAMING, LOST, PAIR, MENU, MAPPING, PIN)
 
 
 @dataclass
@@ -57,12 +57,18 @@ class View:
     t: float = 0.0                          # animation clock
     dim: float = 0.0                        # 0..1 attract-mode dimming; 1.0 = display asleep (black)
     notice: str = ""                        # small parent line on HOME (config problems)
+    prompt: str = ""                        # MAPPING: what to press now
+    progress: str = ""                      # MAPPING: "3 of 14"
+    pad_name: str = ""                      # MAPPING: the device being mapped
+    pin_digits: list = field(default_factory=list)   # PIN entry
+    pin_cursor: int = 0
 
     def key(self) -> tuple:
         """Everything that changes the static layer (NOT focus, t, elapsed: those are animated regions)."""
         return (self.screen, tuple((x.name, x.art) for x in self.tiles), self.cols, self.app, self.host_state,
                 self.pads, self.link_bad, self.health, self.kid, self.parent, self.pin, tuple(self.menu_items),
-                self.notice, round(self.dim, 2))
+                self.notice, round(self.dim, 2), self.prompt, self.progress, self.pad_name,
+                tuple(self.pin_digits), self.pin_cursor)
 
 
 class Renderer:
@@ -267,6 +273,26 @@ class Renderer:
             pygame.draw.rect(base, PANEL, pygame.Rect(0, self.h - self.px(150), self.w, self.px(150)))
             self.paragraph(base, "For grown-ups: " + (v.parent or "no details"), 28, MUTED, cx,
                            self.h - self.px(130), self.w - self.px(160))
+        elif v.screen == MAPPING:
+            self.blit_center(self.text("New controller!", 64, TEXT), base, cx, self.px(130))
+            self.blit_center(self.text(v.pad_name[:50], 36, MUTED), base, cx, self.px(220))
+            self.paragraph(base, v.prompt, 84, FOCUS, cx, self.px(380), self.w - self.px(240))
+            self.blit_center(self.text(v.progress, 44, TEXT), base, cx, self.px(620))
+            self.paragraph(base, "Does your controller not have that button? Just wait - it is skipped after 10 "
+                                 "seconds.", 32, MUTED, cx, self.px(760), self.w - self.px(360))
+        elif v.screen == PIN:
+            self.blit_center(self.text("Grown-up code", 64, TEXT), base, cx, self.px(200))
+            boxw, gap = self.px(140), self.px(40)
+            x0 = cx - (4 * boxw + 3 * gap) // 2
+            for i, d in enumerate(v.pin_digits or [0, 0, 0, 0]):
+                r = pygame.Rect(x0 + i * (boxw + gap), self.px(380), boxw, self.px(180))
+                pygame.draw.rect(base, PANEL, r, border_radius=self.px(16))
+                pygame.draw.rect(base, FOCUS if i == v.pin_cursor else MUTED, r, width=self.px(8 if i == v.pin_cursor
+                                                                                                else 3),
+                                 border_radius=self.px(16))
+                t = self.text(str(d), 120, TEXT)
+                base.blit(t, t.get_rect(center=r.center))
+            self.hint(base, "Up/Down change   Left/Right move   A  OK   B  Cancel")
         elif v.screen == PAIR:
             self.paragraph(base, "Ask a grown-up to type this PIN on the game PC", 60, TEXT, cx, self.px(170),
                            self.w - self.px(240))

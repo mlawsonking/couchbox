@@ -142,3 +142,21 @@ def test_menu_hides_pair_when_policy_off():
     assert PAIR in Menu(True).items and PAIR not in Menu(False).items
     m = Menu(True)
     assert not m.move(inp.UP) and m.move(inp.DOWN) and m.selected() == PAIR
+
+
+def test_4k_rung_is_hevc_only_and_av1_hdr_off_by_default(tmp_path):
+    cfg = C.load(write(tmp_path, '[stream]\ncodec = "H.264"\n'))
+    a = cfg.stream_argv("/m", "pc", "Desktop", "4k60-40")
+    assert a[a.index("--video-codec") + 1] == "HEVC" and a[a.index("--resolution") + 1] == "3840x2160"
+    a = cfg.stream_argv("/m", "pc", "Desktop", "1080p60-15")
+    assert a[a.index("--video-codec") + 1] == "H.264"
+    d = C.Config()
+    assert d.codec == "HEVC"
+    a = d.stream_argv("/m", "pc", "Desktop")
+    assert a[a.index("--video-codec") + 1] == "HEVC" and not any("hdr" in x.lower() for x in a)
+    av1 = C.load(write(tmp_path, '[stream]\ncodec = "AV1"\n'))
+    assert any("AV1" in w for w in av1.warnings)
+    a = av1.stream_argv("/m", "pc", "Desktop", "4k60-40")
+    assert a[a.index("--video-codec") + 1] == "HEVC"
+    auto = C.load(write(tmp_path, '[stream]\ncodec = "auto"\n'))
+    assert "--video-codec" not in auto.stream_argv("/m", "pc", "Desktop")

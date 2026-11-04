@@ -1,0 +1,7 @@
+# couchbox: let the kiosk user ("couch") use gamepads, including hot-plugged ones and pads switched off/on.
+# Joystick event/js nodes: group input (couch is a member), read/write for the group.
+SUBSYSTEM=="input", KERNEL=="event*|js*", ENV{ID_INPUT_JOYSTICK}=="1", GROUP="input", MODE="0660"
+# hidraw nodes: SDL's HIDAPI drivers read some pads through hidraw. udev cannot tell a gamepad's hidraw node from
+# other HID devices here, so they get the "uaccess" tag: logind then grants access only to the user of the ACTIVE
+# local seat session - on this box that is the kiosk session of "couch", nobody else.
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", TAG+="uaccess"

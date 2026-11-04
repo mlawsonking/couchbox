@@ -144,12 +144,7 @@ class LocalBackend:
 
     # -- streaming
     def stream_argv(self, app: str) -> list[str]:
-        res, fps, kbps = self.cfg.stream_params()
-        argv = [self.moonlight, "stream", self.cfg.host, app, "--quit-after", "--display-mode", "fullscreen",
-                "--resolution", res, "--fps", str(fps), "--bitrate", str(kbps), "--video-decoder", "hardware"]
-        if self.cfg.codec != "auto":
-            argv += ["--video-codec", self.cfg.codec]
-        return argv
+        return self.cfg.stream_argv(self.moonlight, self.cfg.host, app)
 
     def start_stream(self, app: str) -> None:
         self.stop_stream()

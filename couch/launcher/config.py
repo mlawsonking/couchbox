@@ -47,6 +47,7 @@ class Config:
     custom_fps: int = 60
     custom_bitrate_kbps: int = 15000
     pair_policy: str = "menu"
+    setup_pin: str = ""              # [gamepad] setup_pin: 4 digits; empty = no "Set up a controller" menu item
     nightly_reboot: str = "04:30"
     ntfy_url: str = ""
     tiles: list[Tile] = field(default_factory=list)
@@ -61,6 +62,27 @@ class Config:
         if self.display_mode in MODE_TO_RUNG:
             return MODE_TO_RUNG[self.display_mode]
         return LADDER.get(measured_rung or self.default_rung, LADDER["1080p60-15"])
+
+    def stream_codec(self, resolution: str) -> str | None:
+        """Codec for moonlight-qt's --video-codec. 4K rungs are HEVC-only (the decode path couch-doctor verifies);
+        AV1 only when explicitly configured (off by default: many client iGPUs, e.g. Gen9.5, cannot decode it).
+        None = let moonlight-qt choose ("auto")."""
+        if resolution == "3840x2160":
+            return "HEVC"
+        if self.codec == "auto":
+            return None
+        return self.codec
+
+    def stream_argv(self, moonlight: str, target: str, app: str, measured_rung: str | None = None) -> list[str]:
+        """The one place a moonlight-qt stream command line is built (launcher and daemon both use it).
+        HDR is never requested (moonlight-qt's default is SDR); v1 does not target HDR."""
+        res, fps, kbps = self.stream_params(measured_rung)
+        argv = [moonlight, "stream", target, app, "--quit-after", "--display-mode", "fullscreen",
+                "--resolution", res, "--fps", str(fps), "--bitrate", str(kbps), "--video-decoder", "hardware"]
+        codec = self.stream_codec(res)
+        if codec:
+            argv += ["--video-codec", codec]
+        return argv
 
 
 def _default_tiles() -> list[Tile]:
@@ -151,6 +173,8 @@ def _load(path: str) -> Config:
     if cfg.codec not in CODECS:
         problems.append(f"stream.codec must be one of {sorted(CODECS)}")
         cfg.codec = "HEVC"
+    if cfg.codec == "AV1":
+        cfg.warnings.append("stream.codec AV1 needs AV1 hardware decode on this box - check couch-doctor's decode line")
     cfg.custom_resolution = get(st, "custom_resolution", str, cfg.custom_resolution)
     if not re.match(r"^\d{3,4}x\d{3,4}$", cfg.custom_resolution):
         problems.append("stream.custom_resolution must look like 1920x1080")
@@ -169,6 +193,12 @@ def _load(path: str) -> Config:
     if cfg.pair_policy not in ("menu", "off"):
         problems.append("pair.policy must be menu or off")
         cfg.pair_policy = "menu"
+
+    gp = section("gamepad")
+    cfg.setup_pin = str(get(gp, "setup_pin", str, ""))
+    if cfg.setup_pin and not re.match(r"^\d{4}$", cfg.setup_pin):
+        problems.append("gamepad.setup_pin must be 4 digits (or empty)")
+        cfg.setup_pin = ""
 
     mt = section("maintenance")
     cfg.nightly_reboot = get(mt, "nightly_reboot", str, cfg.nightly_reboot)

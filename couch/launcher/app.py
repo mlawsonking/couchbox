@@ -13,7 +13,8 @@ from . import input as inp
 from . import render as R
 from . import state as S
 from .config import DEFAULT_PATH, Config, Watcher, load
-from .tiles import CLOSE, PAIR, RESTART, Grid, Menu
+from . import gamepads as G
+from .tiles import CLOSE, PAIR, RESTART, SETUP_PAD, Grid, Menu, PinEntry
 
 ATTRACT_AFTER = 10 * 60.0      # dim the home screen
 SLEEP_AFTER = 60 * 60.0        # display off (black + DPMS hook)
@@ -33,8 +34,17 @@ class App:
         self.m = S.Machine(backend, host=cfg.host, mac=cfg.mac, now=now)
         self.m.config_error = cfg.error
         self.grid = Grid(list(cfg.tiles))
-        self.menu = Menu(pair_allowed=cfg.pair_policy == "menu")
+        self.menu = Menu(pair_allowed=cfg.pair_policy == "menu", pad_setup_allowed=bool(cfg.setup_pin))
         self.menu_open = False
+        # Gamepads: instance id -> {"guid", "name", "controller"}; the first-run mapping session, the PIN gate.
+        self.devices: dict[int, dict] = {}
+        self.last_device: int | None = None
+        self.mapping: G.MappingSession | None = None
+        self.offer_queue: list[int] = []
+        self.pin_entry: PinEntry | None = None
+        self.reload_controllers = False         # main loop re-inits SDL's controller subsystem when set
+        self.mappings_path = G.MAPPINGS_PATH
+        self.seen_path = G.SEEN_PATH
         self.last_input = now
         self.dim = 0.0
         self.pads = 0
@@ -57,18 +67,91 @@ class App:
             self.b.cfg = cfg
         self.grid.replace(cfg.tiles)
         self.menu.pair_allowed = cfg.pair_policy == "menu"
+        self.menu.pad_setup_allowed = bool(cfg.setup_pin)
         self.menu.focus = 0
 
     def screen(self) -> str:
         sc = STATE_TO_SCREEN[self.m.state]
+        if sc == R.HOME and self.mapping is not None:
+            return R.MAPPING
+        if sc == R.HOME and self.pin_entry is not None:
+            return R.PIN
         if sc == R.HOME and self.menu_open:
             return R.MENU
         return sc
+
+    # ---------------------------------------------------------------- gamepads (hot-plug, first-run mapping)
+    def device_added(self, iid: int, guid: str, name: str, is_controller: bool, now: float) -> None:
+        self.devices[iid] = {"guid": guid, "name": name, "controller": is_controller}
+        self.last_device = iid
+        log.info("gamepad added: %s guid %s (%s)", name, G.db_guid(guid), "mapped" if is_controller else "UNMAPPED")
+        if G.needs_first_run_mapping(guid, is_controller, G.load_mappings(self.mappings_path),
+                                     G.load_seen(self.seen_path)):
+            self.offer_queue.append(iid)
+            self._start_queued_mapping(now)
+
+    def device_removed(self, iid: int, now: float) -> None:
+        self.devices.pop(iid, None)
+        if iid in self.offer_queue:
+            self.offer_queue.remove(iid)
+        if self.mapping is not None and self.mapping.instance_id == iid:
+            # Pad switched off mid-mapping: drop the session WITHOUT marking it seen; it is offered again on return.
+            log.info("gamepad removed during mapping; will offer again when it returns")
+            self.mapping = None
+
+    def _start_queued_mapping(self, now: float) -> None:
+        # Never interrupt a stream, a failure screen or pairing: mapping waits for the home screen.
+        if self.mapping is not None or self.m.state != S.IDLE:
+            return
+        while self.offer_queue:
+            iid = self.offer_queue.pop(0)
+            d = self.devices.get(iid)
+            if d:
+                self.start_mapping(iid, now)
+                return
+
+    def start_mapping(self, iid: int, now: float) -> None:
+        d = self.devices[iid]
+        self.menu_open = False
+        self.pin_entry = None
+        self.mapping = G.MappingSession(iid, d["guid"], d["name"], now)
+
+    def raw_event(self, ev, now: float) -> bool:
+        """Raw joystick events go to the mapping session while it runs. Returns True when consumed."""
+        if self.mapping is None:
+            return False
+        self.mapping.feed(ev, now)
+        self.last_input = now
+        return True
+
+    def _tick_mapping(self, now: float) -> None:
+        ms = self.mapping
+        if ms is None:
+            self._start_queued_mapping(now)
+            return
+        ms.tick(now)
+        if ms.done or ms.aborted:
+            line = ms.mapping_line() if ms.done else None
+            if line:
+                try:
+                    G.save_mapping(line, self.mappings_path)
+                    log.info("saved gamepad mapping: %s", line)
+                    self.reload_controllers = True
+                    self._play("ready")
+                except OSError as exc:
+                    log.error("cannot write %s: %s", self.mappings_path, exc)
+            else:
+                log.info("gamepad mapping %s for %s; the raw-joystick fallback stays in use",
+                         "incomplete" if ms.done else "abandoned", ms.guid)
+            G.mark_seen(ms.guid, self.seen_path)
+            self.mapping = None
 
     # ---------------------------------------------------------------- input
     def handle(self, actions: list[str], now: float) -> None:
         if not actions:
             return
+        if self.mapping is not None:
+            return                 # the mapping screen listens to raw events only (see raw_event)
         self.last_input = now
         if self.dim > 0:
             # The first press only wakes the screen; it never also launches something.
@@ -111,8 +194,26 @@ class App:
                 elif item == PAIR:
                     self._play("select")
                     self.m.pair(now)
+                elif item == SETUP_PAD:
+                    self._play("select")
+                    self.pin_entry = PinEntry()
                 elif item == CLOSE:
                     self._play("back")
+        elif sc == R.PIN:
+            pe = self.pin_entry
+            if a in (inp.UP, inp.DOWN, inp.LEFT, inp.RIGHT):
+                pe.move(a)
+                self._play("move")
+            elif a == inp.BACK:
+                self.pin_entry = None
+                self._play("back")
+            elif a == inp.SELECT:
+                ok = pe.check(self.cfg.setup_pin, now) and bool(self.cfg.setup_pin)
+                self.pin_entry = None
+                if ok and self.last_device in self.devices:
+                    self.start_mapping(self.last_device, now)
+                else:
+                    self._play("error")
         elif sc in (R.WAKING, R.CONNECTING, R.PAIR):
             if a == inp.BACK:
                 self._play("back")
@@ -133,6 +234,7 @@ class App:
     def tick(self, now: float) -> None:
         before = self.m.state
         self.m.tick(now)
+        self._tick_mapping(now)
         after = self.m.state
         if before != after:
             log.info("state %s -> %s%s", before, after,
@@ -173,6 +275,11 @@ class App:
             pin=self.m.pin or "", menu_items=self.menu.items, menu_focus=self.menu.focus,
             elapsed=self.m.elapsed(now), t=now, dim=self.dim,
             notice=("Settings problem: " + self.cfg.error) if self.cfg.error else "",
+            prompt=self.mapping.prompt if self.mapping else "",
+            progress=("%d of %d" % self.mapping.progress) if self.mapping else "",
+            pad_name=self.mapping.name if self.mapping else "",
+            pin_digits=list(self.pin_entry.digits) if self.pin_entry else [],
+            pin_cursor=self.pin_entry.cursor if self.pin_entry else 0,
         )
 
     def handle_pending(self, p: dict | None, now: float) -> None:
@@ -233,8 +340,10 @@ def main(config_path: str = DEFAULT_PATH) -> int:
     else:
         log.error("no usable SDL video driver")
         return 3
+    n_maps = G.apply_to_environment()          # /etc/couch/gamepads.txt -> SDL, before controllers initialise
     pygame.init()
     controller.init()
+    log.info("loaded %d saved gamepad mapping(s)", n_maps)
     pygame.mouse.set_visible(False)
     screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     pygame.display.set_caption("Couch")
@@ -244,7 +353,7 @@ def main(config_path: str = DEFAULT_PATH) -> int:
     app = App(cfg, backend, now=time.monotonic(), sounds=Sounds(), display_power=_display_power_hook)
     renderer = R.Renderer(screen.get_size())
     mapper = inp.Mapper()
-    pads: dict[int, object] = {}
+    devices = G.Devices(G.SdlAdapter())
     clock = pygame.time.Clock()
     next_slow = 0.0
     exit_at = time.monotonic() + float(os.environ["COUCH_EXIT_AFTER"]) if os.environ.get("COUCH_EXIT_AFTER") else None
@@ -258,19 +367,18 @@ def main(config_path: str = DEFAULT_PATH) -> int:
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
                     app.quit_requested = True
-                elif ev.type == pygame.CONTROLLERDEVICEADDED:
-                    try:
-                        c = controller.Controller(ev.device_index)
-                        pads[c.as_joystick().get_instance_id()] = c
-                        mapper.controller_ids = set(pads)
-                    except pygame.error:
-                        pass
-                elif ev.type == pygame.CONTROLLERDEVICEREMOVED:
-                    pads.pop(ev.instance_id, None)
-                    mapper.controller_ids = set(pads)
+                elif ev.type in (pygame.JOYDEVICEADDED, pygame.JOYDEVICEREMOVED, pygame.CONTROLLERDEVICEADDED,
+                                 pygame.CONTROLLERDEVICEREMOVED):
+                    devices.handle(ev, app, mapper, now)       # hot-plug and pad off/on, no restart needed
+                elif ev.type in (pygame.JOYBUTTONDOWN, pygame.JOYBUTTONUP, pygame.JOYHATMOTION,
+                                 pygame.JOYAXISMOTION) and app.raw_event(ev, now):
+                    continue                                   # the first-run mapping screen owns raw input
                 actions += mapper.feed(ev, now)
             actions += mapper.tick(now)
-            app.pads = max(len(pads), pygame.joystick.get_count())
+            app.pads = devices.count
+            if app.reload_controllers:
+                app.reload_controllers = False
+                log.info("reloaded %d gamepad mapping(s)", devices.reload_mappings(app.mappings_path))
             app.handle(actions, now)
             app.tick(now)
             if now >= next_slow:

@@ -20,5 +20,8 @@ def sample_views() -> dict[str, R.View]:
         "pair": R.View(R.PAIR, pin="4821"),
         "menu": R.View(R.MENU, tiles=tiles, menu_items=["Restart the box", "Pair with the game PC", "Back"],
                        menu_focus=1, pads=2, host_state="awake"),
+        "mapping": R.View(R.MAPPING, prompt="Press the D-pad LEFT", progress="7 of 14",
+                          pad_name="Generic 2.4G Gamepad (0079:18d4)"),
+        "pin": R.View(R.PIN, pin_digits=[4, 0, 0, 0], pin_cursor=1),
         "attract": R.View(R.HOME, tiles=tiles, focus=0, host_state="asleep", pads=1, dim=0.6),
     }

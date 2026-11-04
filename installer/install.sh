@@ -1,7 +1,7 @@
 #!/bin/bash
 # couchbox installer for the NUC (Ubuntu Server 24.04 LTS only).
 #
-#   sudo ./install.sh [--dry-run] [--no-services] [--no-dkms] [--skip-packages] [--pins FILE]
+#   sudo ./install.sh [--dry-run] [--no-services] [--with-xone] [--with-xpadneo] [--skip-packages] [--pins FILE]
 #
 # Idempotent: every step checks current state first; a second run reports "changes: 0".
 # Touches ONLY: the packages listed below, /opt/couch, /etc/couch, /var/lib/couch, /var/log/couch, couch-* systemd
@@ -15,7 +15,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 DRY_RUN=0
 NO_SERVICES=0
-NO_DKMS=0
+WITH_XONE=0
+WITH_XPADNEO=0
 SKIP_PACKAGES=0
 FROM_FIRSTBOOT=0
 PINS_FILE="$SCRIPT_DIR/pins.env"
@@ -31,6 +32,7 @@ LOG_FILE="$COUCH_LOG/install.log"
 CHANGES=0
 WARNINGS=0
 JOURNALD_CHANGED=0
+UDEV_CHANGED=0
 
 usage() {
     sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -39,7 +41,11 @@ usage() {
 Options:
   --dry-run        print the plan (every change that would be made) and change nothing
   --no-services    do not call systemctl at all (container rehearsal)
-  --no-dkms        skip the xone/xpadneo DKMS gamepad drivers and dongle firmware (container rehearsal)
+  --with-xone      also install xone (DKMS) for Microsoft's Xbox Wireless Adapter. It blacklists the in-kernel xpad
+                   driver, which generic receivers that present as an Xbox 360 pad (045E:028E) need - so only use it
+                   if you actually use Microsoft's adapter.
+  --with-xpadneo   also install xpadneo (DKMS) for Xbox pads over Bluetooth
+  --no-dkms        accepted for compatibility; DKMS drivers are opt-in (the default is none)
   --skip-packages  do not apt-get anything (development only)
   --pins FILE      alternative pins file (tests use a fixture moonlight-qt)
   --from-firstboot used by couch-firstboot.service to finish an install begun in the installer chroot
@@ -50,7 +56,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
         --no-services) NO_SERVICES=1 ;;
-        --no-dkms) NO_DKMS=1 ;;
+        --with-xone) WITH_XONE=1 ;;
+        --with-xpadneo) WITH_XPADNEO=1 ;;
+        --no-dkms) ;;
         --skip-packages) SKIP_PACKAGES=1 ;;
         --from-firstboot) FROM_FIRSTBOOT=1 ;;
         --pins) shift; PINS_FILE="${1:?--pins needs a file}" ;;
@@ -152,7 +160,7 @@ ensure_packages() {
         return
     fi
     local want=("${PACKAGES_BASE[@]}") missing=() p
-    if [ "$NO_DKMS" -eq 0 ]; then want+=("${PACKAGES_DKMS[@]}"); fi
+    if [ "$WITH_XONE" -eq 1 ] || [ "$WITH_XPADNEO" -eq 1 ]; then want+=("${PACKAGES_DKMS[@]}"); fi
     for p in "${want[@]}"; do
         if pkg_installed "$p"; then :; else missing+=("$p"); fi
     done
@@ -471,33 +479,51 @@ install_firmware() { # PID URL FILE SHA
 }
 
 ensure_gamepad_drivers() {
-    section "gamepad drivers (xone dongle + wired, xpadneo Bluetooth)"
-    if [ "$NO_DKMS" -eq 1 ]; then
-        warn "--no-dkms: xone/xpadneo not installed; wired pads use the in-kernel xpad driver"
+    section "gamepads (generic HID + SDL controller DB; optional xone / xpadneo)"
+    # Primary path needs no out-of-tree driver: generic receivers are handled by the kernel (xpad for XInput-class
+    # 045E:028E, hid-generic otherwise) and mapped by SDL's database or /etc/couch/gamepads.txt.
+    local f="$SCRIPT_DIR/files"
+    if ! cmp -s "$f/udev/70-couch-gamepads.rules" /etc/udev/rules.d/70-couch-gamepads.rules; then UDEV_CHANGED=1; fi
+    ensure_file "$f/udev/70-couch-gamepads.rules" /etc/udev/rules.d/70-couch-gamepads.rules 0644 root:root
+    ensure_file_once "$f/etc/couch/gamepads.txt" "$COUCH_ETC/gamepads.txt" 0664 couch:couch
+    local bl=/etc/modprobe.d/couch-xone-blacklist.conf
+    if [ "$WITH_XONE" -eq 0 ] && [ -e "$bl" ]; then
+        # A previous --with-xone install blacklisted xpad; without xone that would leave generic pads driverless.
+        change "remove $bl (xone not requested; xpad must stay available)" rm -f "$bl"
+    fi
+    if [ "$WITH_XONE" -eq 0 ] && [ "$WITH_XPADNEO" -eq 0 ]; then
+        ok "no optional DKMS gamepad drivers requested (--with-xone / --with-xpadneo)"
         return
     fi
     local xsrc="/usr/src/xone-$XONE_VERSION" nsrc="/usr/src/hid-xpadneo-$XPADNEO_VERSION"
-    if [ "$(cat "$xsrc/.couch-commit" 2>/dev/null || true)" = "$XONE_COMMIT" ]; then
-        ok "$xsrc at pinned commit"
-    else
-        change "fetch xone v$XONE_VERSION (commit ${XONE_COMMIT:0:12}) into $xsrc" prepare_xone_src
+    if [ "$WITH_XONE" -eq 1 ]; then
+        if [ "$(cat "$xsrc/.couch-commit" 2>/dev/null || true)" = "$XONE_COMMIT" ]; then
+            ok "$xsrc at pinned commit"
+        else
+            change "fetch xone v$XONE_VERSION (commit ${XONE_COMMIT:0:12}) into $xsrc" prepare_xone_src
+        fi
     fi
-    if [ "$(cat "$nsrc/.couch-commit" 2>/dev/null || true)" = "$XPADNEO_COMMIT" ]; then
-        ok "$nsrc at pinned commit"
-    else
-        change "fetch xpadneo v$XPADNEO_VERSION (commit ${XPADNEO_COMMIT:0:12}) into $nsrc" prepare_xpadneo_src
+    if [ "$WITH_XPADNEO" -eq 1 ]; then
+        if [ "$(cat "$nsrc/.couch-commit" 2>/dev/null || true)" = "$XPADNEO_COMMIT" ]; then
+            ok "$nsrc at pinned commit"
+        else
+            change "fetch xpadneo v$XPADNEO_VERSION (commit ${XPADNEO_COMMIT:0:12}) into $nsrc" prepare_xpadneo_src
+        fi
     fi
+    if [ "$WITH_XONE" -eq 1 ]; then
+        ensure_xone_extras
+    fi
+    ensure_dkms_builds
+}
 
-    # xone needs xpad (and mt76x2u, which grabs the dongle's radio) out of the way. Wired Xbox One/Series pads are
-    # then served by xone_wired; Xbox 360 wired pads would need xpad-noone (documented, not installed).
-    local bl tmpb
+ensure_xone_extras() {
+    # xone needs xpad (and mt76x2u, which grabs the adapter's radio) out of the way.
+    local tmpb
     tmpb="$(mktemp)"
-    printf '%s\n' "# couchbox: installed with xone (it replaces xpad for Xbox One/Series pads)" \
+    printf '%s\n' "# couchbox: installed with --with-xone (xone replaces xpad for Microsoft's adapter)" \
         "blacklist xpad" "blacklist mt76x2u" >"$tmpb"
-    bl=/etc/modprobe.d/couch-xone-blacklist.conf
-    ensure_file "$tmpb" "$bl" 0644 root:root
+    ensure_file "$tmpb" /etc/modprobe.d/couch-xone-blacklist.conf 0644 root:root
     rm -f "$tmpb"
-
     local pid url file sha
     while read -r pid url file sha; do
         [ -n "${pid:-}" ] || continue
@@ -507,22 +533,29 @@ ensure_gamepad_drivers() {
             change "fetch + verify dongle firmware for pid $pid" install_firmware "$pid" "$url" "$file" "$sha"
         fi
     done <<<"$XONE_FIRMWARE"
+}
 
+ensure_dkms_builds() {
     if [ "$DEFER" -eq 1 ]; then
         ok "DKMS build deferred to first boot (kernel at install time != running kernel)"
         return
     fi
     local k
     k="$(uname -r)"
-    if dkms_installed_for xone "$XONE_VERSION" "$k"; then
-        ok "xone $XONE_VERSION built for $k"
-    else
-        change "dkms install xone $XONE_VERSION for $k" dkms install -m xone -v "$XONE_VERSION" -k "$k"
+    if [ "$WITH_XONE" -eq 1 ]; then
+        if dkms_installed_for xone "$XONE_VERSION" "$k"; then
+            ok "xone $XONE_VERSION built for $k"
+        else
+            change "dkms install xone $XONE_VERSION for $k" dkms install -m xone -v "$XONE_VERSION" -k "$k"
+        fi
     fi
-    if dkms_installed_for hid-xpadneo "$XPADNEO_VERSION" "$k"; then
-        ok "xpadneo $XPADNEO_VERSION built for $k"
-    else
-        change "dkms install hid-xpadneo $XPADNEO_VERSION for $k" dkms install -m hid-xpadneo -v "$XPADNEO_VERSION" -k "$k"
+    if [ "$WITH_XPADNEO" -eq 1 ]; then
+        if dkms_installed_for hid-xpadneo "$XPADNEO_VERSION" "$k"; then
+            ok "xpadneo $XPADNEO_VERSION built for $k"
+        else
+            change "dkms install hid-xpadneo $XPADNEO_VERSION for $k" \
+                dkms install -m hid-xpadneo -v "$XPADNEO_VERSION" -k "$k"
+        fi
     fi
 }
 
@@ -536,6 +569,10 @@ ensure_services() {
     if [ "$DRY_RUN" -eq 0 ] && systemd_running; then
         systemctl daemon-reload
         if [ "$JOURNALD_CHANGED" -eq 1 ]; then systemctl try-restart systemd-journald.service || true; fi
+        if [ "$UDEV_CHANGED" -eq 1 ] && command -v udevadm >/dev/null; then
+            udevadm control --reload || true
+            udevadm trigger --subsystem-match=input --subsystem-match=hidraw || true
+        fi
     fi
     if [ "$(readlink /etc/systemd/system/getty@tty1.service 2>/dev/null || true)" = "/dev/null" ]; then
         ok "getty@tty1 masked"
@@ -576,7 +613,7 @@ ensure_services() {
 
 # ---------------------------------------------------------------- main
 main() {
-    say "couchbox install $(date -Is) dry_run=$DRY_RUN no_services=$NO_SERVICES no_dkms=$NO_DKMS"
+    say "couchbox install $(date -Is) dry_run=$DRY_RUN no_services=$NO_SERVICES with_xone=$WITH_XONE with_xpadneo=$WITH_XPADNEO"
     preflight
     decide_mode
     ensure_packages

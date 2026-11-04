@@ -21,7 +21,7 @@ SHA="$(sha256sum "$FAKE" | cut -d' ' -f1)"
 sed -e "s|^MOONLIGHT_URL=.*|MOONLIGHT_URL=\"file://$FAKE\"|" -e "s|^MOONLIGHT_SHA256=.*|MOONLIGHT_SHA256=\"$SHA\"|" \
     /work/installer/pins.env >/tmp/pins.env
 
-ARGS=(--no-dkms --pins /tmp/pins.env)
+ARGS=(--pins /tmp/pins.env)
 if [ "$MODE" = plain ]; then ARGS+=(--no-services); fi
 
 echo "---- dry run on a pristine system"
@@ -34,7 +34,8 @@ pass "dry run changed nothing and printed a plan"
 
 echo "---- bad pin is refused"
 sed "s|^MOONLIGHT_SHA256=.*|MOONLIGHT_SHA256=\"$(printf '0%.0s' $(seq 64))\"|" /tmp/pins.env >/tmp/badpins.env
-BAD_ARGS=("${ARGS[@]}"); BAD_ARGS[2]=/tmp/badpins.env
+BAD_ARGS=(--pins /tmp/badpins.env)
+if [ "$MODE" = plain ]; then BAD_ARGS+=(--no-services); fi
 if /work/installer/install.sh "${BAD_ARGS[@]}" >/tmp/bad.log 2>&1; then fail "install accepted a wrong sha256"; fi
 grep -q 'sha256 mismatch' /tmp/bad.log || fail "wrong sha256 not reported"
 [ ! -e /opt/couch/moonlight/current ] || fail "moonlight installed despite bad sha"
@@ -79,6 +80,17 @@ check_mode /etc/apt/apt.conf.d/21couch-auto-upgrades 644 root:root
 /opt/couch/bin/moonlight-qt --version || fail "moonlight wrapper does not run"
 [ -f /opt/couch/src/installer/install.sh ] || fail "source copy missing"
 pass "files, modes and owners"
+
+check_mode /etc/udev/rules.d/70-couch-gamepads.rules 644 root:root
+check_mode /etc/couch/gamepads.txt 664 couch:couch
+[ ! -e /etc/modprobe.d/couch-xone-blacklist.conf ] || fail "xpad blacklisted by default (would break 045E:028E receivers)"
+dpkg-query -W -f='${Status}' intel-media-va-driver | grep -q 'install ok installed' || fail "intel-media-va-driver (iHD) missing"
+pass "gamepads: udev rule, writable gamepads.txt, xpad NOT blacklisted; iHD VA-API driver installed"
+printf 'blacklist xpad\n' >/etc/modprobe.d/couch-xone-blacklist.conf
+/work/installer/install.sh "${ARGS[@]}" >/tmp/run-bl.log
+[ ! -e /etc/modprobe.d/couch-xone-blacklist.conf ] || fail "stale xpad blacklist from an earlier --with-xone not removed"
+/work/installer/install.sh "${ARGS[@]}" | grep -q '^changes: 0, ' || fail "not idempotent after blacklist removal"
+pass "a stale xone blacklist is removed when xone is not requested"
 
 /opt/couch/venv/bin/python -m pip list --format=freeze 2>/dev/null | grep -v '^pip==' >/tmp/pip.txt
 [ "$(cat /tmp/pip.txt)" = "pygame-ce==2.5.2" ] || fail "venv holds more than pygame-ce: $(cat /tmp/pip.txt)"

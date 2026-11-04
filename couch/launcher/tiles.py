@@ -59,16 +59,19 @@ class Grid:
 
 
 RESTART, PAIR, CLOSE = "Restart the box", "Pair with the game PC", "Back"
+SETUP_PAD = "Set up a controller"
 
 
 @dataclass
 class Menu:
     pair_allowed: bool = True
     focus: int = 0
+    pad_setup_allowed: bool = False      # only when couch.toml [gamepad] setup_pin is set (PIN-gated)
 
     @property
     def items(self) -> list[str]:
-        return [RESTART, PAIR, CLOSE] if self.pair_allowed else [RESTART, CLOSE]
+        items = [RESTART] + ([PAIR] if self.pair_allowed else []) + ([SETUP_PAD] if self.pad_setup_allowed else [])
+        return items + [CLOSE]
 
     def move(self, action: str) -> bool:
         if action == inp.UP and self.focus > 0:
@@ -81,3 +84,42 @@ class Menu:
 
     def selected(self) -> str:
         return self.items[min(self.focus, len(self.items) - 1)]
+
+
+@dataclass
+class PinEntry:
+    """Four digits entered with the D-pad: up/down change the digit, left/right move, A checks, B cancels.
+    Three wrong tries lock it for 5 minutes (a kid can't brute-force it from the couch)."""
+    digits: list = None
+    cursor: int = 0
+    tries: int = 0
+    locked_until: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.digits = [0, 0, 0, 0]
+
+    def reset(self) -> None:
+        self.digits, self.cursor = [0, 0, 0, 0], 0
+
+    def move(self, action: str) -> None:
+        if action == inp.UP:
+            self.digits[self.cursor] = (self.digits[self.cursor] + 1) % 10
+        elif action == inp.DOWN:
+            self.digits[self.cursor] = (self.digits[self.cursor] - 1) % 10
+        elif action == inp.LEFT and self.cursor > 0:
+            self.cursor -= 1
+        elif action == inp.RIGHT and self.cursor < 3:
+            self.cursor += 1
+
+    def check(self, pin: str, now: float) -> bool:
+        if now < self.locked_until:
+            return False
+        ok = "".join(map(str, self.digits)) == pin
+        if ok:
+            self.tries = 0
+        else:
+            self.tries += 1
+            if self.tries >= 3:
+                self.tries, self.locked_until = 0, now + 300
+        self.reset()
+        return ok

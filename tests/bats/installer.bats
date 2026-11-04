@@ -26,10 +26,25 @@ teardown() { rm -rf "$TMP"; }
     [[ "$output" == *"unknown option"* ]]
 }
 
-@test "install.sh --help documents --dry-run --no-services --no-dkms" {
+@test "install.sh --help documents --dry-run --no-services --with-xone --with-xpadneo" {
     run "$REPO/installer/install.sh" --help
     [ "$status" -eq 0 ]
-    [[ "$output" == *"--dry-run"* && "$output" == *"--no-services"* && "$output" == *"--no-dkms"* ]]
+    [[ "$output" == *"--dry-run"* && "$output" == *"--no-services"* && "$output" == *"--with-xone"* ]]
+    [[ "$output" == *"--with-xpadneo"* ]]
+}
+
+@test "default plan installs no DKMS driver and never blacklists xpad; --with-xone does" {
+    printf 'ID=ubuntu\nVERSION_ID="24.04"\n' >"$TMP/os-release"
+    COUCH_OS_RELEASE="$TMP/os-release" run "$REPO/installer/install.sh" --dry-run --skip-packages
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"xone"*"blacklist"* && "$output" != *"fetch xone"* && "$output" != *"xpadneo v"* ]]
+    [[ "$output" == *"70-couch-gamepads.rules"* ]]
+    COUCH_OS_RELEASE="$TMP/os-release" run "$REPO/installer/install.sh" --dry-run --skip-packages --with-xone
+    [[ "$output" == *"fetch xone"* && "$output" == *"couch-xone-blacklist.conf"* && "$output" != *"fetch xpadneo"* ]]
+}
+
+@test "the VA-API package list includes intel-media-va-driver (iHD)" {
+    grep -qE '^\s+mesa-va-drivers intel-media-va-driver ' "$REPO/installer/install.sh"
 }
 
 @test "install.sh never partitions or formats" {
@@ -40,7 +55,7 @@ teardown() { rm -rf "$TMP"; }
 @test "install.sh dry run on an Ubuntu 24.04 host plans and changes nothing" {
     printf 'ID=ubuntu\nVERSION_ID="24.04"\n' >"$TMP/os-release"
     before="$(ls -la /opt /etc | sha256sum)"
-    COUCH_OS_RELEASE="$TMP/os-release" run "$REPO/installer/install.sh" --dry-run --no-dkms --skip-packages
+    COUCH_OS_RELEASE="$TMP/os-release" run "$REPO/installer/install.sh" --dry-run --skip-packages
     [ "$status" -eq 0 ]
     [[ "$output" == *"dry run: changes planned:"* ]]
     [ "$before" = "$(ls -la /opt /etc | sha256sum)" ]

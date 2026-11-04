@@ -257,3 +257,34 @@ def test_every_state_reached_and_every_edge_covered():
         m.launch("x", 0)
         seen.add((m.state, S.IDLE))
     assert expected <= seen, expected - seen
+
+
+@pytest.mark.parametrize("how", ["moonlight_exits", "moonlight_hangs"])
+def test_host_vanishing_mid_stream_is_a_normal_path(how):
+    """facts: the workstation has bugchecked ~10 times since July. A host that disappears mid-stream must end on the
+    kid-readable LOST screen (never a crash or a hang), and Retry must walk the normal wake path until it is back."""
+    b, m = mk()
+    stream(m, b)                                   # STREAMING since t=1
+    b._host_up = b._sunshine_up = False            # bugcheck: PC gone
+    if how == "moonlight_exits":
+        b.stream = ("exited", 1)                   # moonlight notices first (after > LAUNCH_GRACE)
+        m.tick(60)
+        assert m.state == S.LOST and m.failure.reason == "STREAM_LOST"
+    else:
+        m.tick(60)                                 # moonlight still "running", host silent
+        m.tick(60 + S.HOST_GONE_GRACE)
+        assert m.state == S.LOST and m.failure.reason == "HOST_GONE" and b.stopped == 1
+    assert m.failure.kid == "We lost the game PC." and m.app == "Celeste"
+    # Retry while the PC is still rebooting: normal WAKING with WoL, no strikes carried over.
+    m.retry(200)
+    assert m.state == S.WAKING and m.strikes == 0 and b.calls.count("wake") >= 1
+    m.tick(230)
+    b._host_up = True                              # Windows is back up, Sunshine not yet
+    m.tick(240)
+    assert m.state == S.WAIT_SUNSHINE
+    b._sunshine_up = True
+    m.tick(250)
+    assert m.state == S.STREAMING and b.calls.count(("stream", "Celeste")) == 2
+    b.stream = ("exited", 0)
+    m.tick(900)
+    assert m.state == S.IDLE and m.failure is None
