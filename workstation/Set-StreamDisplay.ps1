@@ -27,6 +27,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'CouchKit.psm1') -Force
+$StatePath = Resolve-CouchPath $StatePath
 if ($Fps -le 0) { $Fps = 60 }
 
 $state = Read-StreamDisplayState -Path $StatePath

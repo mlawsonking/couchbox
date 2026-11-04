@@ -64,6 +64,8 @@ $existing = ''
 if (Test-Path -LiteralPath $appsPath) { $existing = [System.IO.File]::ReadAllText($appsPath) }
 $new = @(New-SunshineDefaultApps)
 if ($LibraryJson) {
+    $LibraryJson = Resolve-CouchPath $LibraryJson
+    if (-not (Test-Path -LiteralPath $LibraryJson)) { throw ('library JSON not found: ' + $LibraryJson + ' (pass the full path Export-SteamLibrary printed)') }
     $lib = [System.IO.File]::ReadAllText($LibraryJson) | ConvertFrom-Json
     $artDir = Join-Path $SunshineConfigDir 'couchbox-art'
     foreach ($g in @($lib.games)) {

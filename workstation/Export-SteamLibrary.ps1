@@ -20,6 +20,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'CouchKit.psm1') -Force
+$OutDir = Resolve-CouchPath $OutDir
 
 if (-not (Test-Path -LiteralPath $SteamPath)) { throw ('Steam not found at ' + $SteamPath + ' (use -SteamPath)') }
 if (-not $SunshineConfigDir) { $SunshineConfigDir = Get-CouchSunshineConfigDir }

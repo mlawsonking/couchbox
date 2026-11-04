@@ -21,7 +21,8 @@ first; nothing changes without `-Apply`.
 2. `.\Export-SteamLibrary.ps1` (look at the plan), then `.\Export-SteamLibrary.ps1 -Apply`. Creates
    `couchbox-export\steam-library.json` + `couchbox-export\art\<appid>.jpg` and PNG copies for Sunshine. Reads
    Steam's files only.
-3. `.\Setup-Sunshine.ps1 -Apply -LibraryJson .\couchbox-export\steam-library.json`. Installs/upgrades Sunshine
+3. `.\Setup-Sunshine.ps1 -Apply -LibraryJson .\couchbox-export\steam-library.json` (or the full path that step 2
+   printed; relative paths resolve against the folder you are in). Installs/upgrades Sunshine
    (winget `LizardByte.Sunshine`), adds the two `couchbox Sunshine` firewall rules (Private network, local subnet),
    and merges one entry per installed game into Sunshine's `apps.json` (backup `apps.json.couchbox-<time>.bak`
    beside it). The two apps Sunshine already has ("Desktop", "Steam Big Picture") and any hand-made entries are

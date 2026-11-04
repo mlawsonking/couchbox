@@ -13,6 +13,7 @@ param([switch]$Apply, [string]$AdapterName, [string]$BackupDir = $PSScriptRoot)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'CouchKit.psm1') -Force
+$BackupDir = Resolve-CouchPath $BackupDir
 if ($WhatIfPreference) { $Apply = $false }      # -WhatIf is always a dry run, even together with -Apply
 
 $adapters = @(Get-CouchWolAdapter)

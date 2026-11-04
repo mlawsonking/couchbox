@@ -28,6 +28,23 @@ function Write-CouchPlan {
 }
 
 # ------------------------------------------------------------------ files
+# .NET file APIs ([System.IO.File]::ReadAllText etc) resolve relative paths against the PROCESS working directory,
+# which is NOT PowerShell's current location (an Administrator window opens in C:\Windows\system32, and cd does not
+# move the process directory). 2026-11-04 field bug: "-LibraryJson .\couchbox-export\steam-library.json" was looked
+# up under system32. Two guards: every user-supplied path goes through Resolve-CouchPath, and importing this module
+# syncs the process directory to the shell's location once.
+try { [System.IO.Directory]::SetCurrentDirectory((Get-Location -PSProvider FileSystem).ProviderPath) } catch { }
+
+function Resolve-CouchPath {
+    # Absolute path for a user-supplied path: rooted paths unchanged, relative ones joined to PowerShell's current
+    # FileSystem location (not the process directory). Does not require the path to exist.
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    if ([System.IO.Path]::IsPathRooted($Path)) { return [System.IO.Path]::GetFullPath($Path) }
+    $base = (Get-Location -PSProvider FileSystem).ProviderPath
+    return [System.IO.Path]::GetFullPath((Join-Path $base $Path))
+}
+
 function Write-Utf8NoBom {
     # Sunshine's JSON reader must not see a BOM; Set-Content -Encoding UTF8 in 5.1 writes one.
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
