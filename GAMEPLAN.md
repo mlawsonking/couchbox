@@ -113,7 +113,7 @@ TV (HDMI) <- NUC: Ubuntu 24.04 -------------------------------------------------
 - **M0 (now):** create the empty private repo `mlawsonking/couchbox`, start a cloud session on it (suggested name
   "Couchfiddling"), tell Fable "repo's up" -> Fable pushes BRIEF.md + facts; then paste the one-line kickoff into the
   session. Credits: give this session the larger share; plexwheel Round 2 priorities 3-4 are polish.
-- **M1:** NUC facts when known (model/CPU gen, RAM, NIC, has Bluetooth?) - `couch-doctor` adapts, but decode caps
+- **M1 (DONE 2026-11-03: NUC7i5BNK, see facts):** NUC facts when known (model/CPU gen, RAM, NIC, has Bluetooth?) - `couch-doctor` adapts, but decode caps
   (HEVC 4K, AV1) depend on the iGPU generation; and the dongle model (Xbox Wireless Adapter = USB-A stick).
 - **M2:** write the installer USB (`make-usb.sh` output, or plain Ubuntu Server 24.04 + `git clone && sudo ./install.sh`),
   boot the NUC on the TV input, plug the dongle. Give Fable SSH access (the installer adds the media server's public

@@ -34,8 +34,10 @@ the game returns to the launcher; it keeps working for months with nobody touchi
   config quality ladder (720p60 10 -> 1080p60 15/20 -> 1440p60 30 -> 4K60 40 Mbps), `couch-doctor` measures jitter/loss/
   throughput to the host (iperf3 on the workstation, installed LAN-only by the kit), and the launcher shows a
   link-quality badge (jitter > 10 ms or loss > 0.5%). Never assume a wired path.
-- Hardware unknowns (NUC model, iGPU generation, TV caps) are NOT known yet: everything adapts at install time via
-  `couch-doctor` (vainfo decode caps -> default display mode), nothing is hard-coded to a model.
+- NUC (known 2026-11-03): **Intel NUC7i5BNK** - i5-7260U Kaby Lake, Iris Plus 640 (Gen9.5): HEVC 8/10-bit 4K60 + H.264 + VP9
+  hardware decode, NO AV1, HDMI 2.0a (4K60 max), I219-V gigabit, Wireless-AC 8265 + BT 4.2, one M.2 SSD, 4x USB-A. See
+  `facts/lan-facts.json` nuc. RAM/SSD sizes and TV caps still unknown: everything STILL adapts at install time via
+  `couch-doctor` (vainfo decode caps -> default display mode); nothing is hard-coded to the model. AV1/HDR off in v1.
 
 ## Phases (each ends in a PR; CI green before you open it)
 ### P1 - Bootable kiosk with the fallback built in
