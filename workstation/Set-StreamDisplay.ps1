@@ -19,7 +19,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)][ValidateSet('do', 'undo', 'restore')][string]$Action,
-    [string]$StatePath = (Join-Path $PSScriptRoot 'stream-display-state.json'),
+    # 2026-11-05 field bug: the default used to be next to the script under Program Files\Sunshine, which the
+    # NON-elevated prep-cmd token cannot write (Users = read-only) -> access denied -> exit 1 -> Sunshine aborted
+    # every app launch. State now lives in the streaming user's own profile.
+    [string]$StatePath = (Join-Path $env:LOCALAPPDATA 'couchbox\stream-display-state.json'),
     [int]$Width = [int]('0' + $env:SUNSHINE_CLIENT_WIDTH),
     [int]$Height = [int]('0' + $env:SUNSHINE_CLIENT_HEIGHT),
     [int]$Fps = [int]('0' + $env:SUNSHINE_CLIENT_FPS)
@@ -27,7 +30,12 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'CouchKit.psm1') -Force
+# A display problem must NEVER block a stream: every failure below is reported and the script still exits 0
+# (Sunshine aborts the app launch when a prep command exits non-zero).
+try {
 $StatePath = Resolve-CouchPath $StatePath
+$stateDir = Split-Path -Parent $StatePath
+if ($stateDir -and -not (Test-Path -LiteralPath $stateDir)) { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null }
 if ($Fps -le 0) { $Fps = 60 }
 
 $state = Read-StreamDisplayState -Path $StatePath
@@ -45,4 +53,7 @@ if ($null -ne $plan.SetMode) {
 }
 if ($plan.ClearState) { Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue }
 Write-Host ('couchbox Set-StreamDisplay ' + $Action + ': ' + $plan.Message)
+} catch {
+    Write-Warning ('couchbox Set-StreamDisplay ' + $Action + ' failed (stream continues): ' + $_.Exception.Message)
+}
 exit 0
