@@ -137,7 +137,7 @@ for g in video input render audio; do id -nG couch | tr ' ' '\n' | grep -qx "$g"
 getent passwd couchadmin >/dev/null || fail "couchadmin missing"
 cmp -s /work/installer/authorized_keys /home/couchadmin/.ssh/authorized_keys || fail "couchadmin key differs"
 check_mode /home/couchadmin/.ssh/authorized_keys 600 couchadmin:couchadmin
-passwd -S couchadmin | awk '{print $2}' | grep -qx L || fail "couchadmin password not locked"
+[ "$(getent shadow couchadmin | cut -d: -f2)" = '*' ] || fail "couchadmin shadow field must be '*' (no password, keys allowed), not a '!' lock that sshd refuses"
 ! id -nG couchadmin | tr ' ' '\n' | grep -qx sudo || fail "couchadmin must not have sudo"
 pass "users"
 

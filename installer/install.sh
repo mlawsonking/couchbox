@@ -214,10 +214,16 @@ ensure_users() {
     if id couchadmin >/dev/null 2>&1; then
         ok "user couchadmin exists"
     else
-        # Key-only admin for remote validation: password locked, read access to the journal, no sudo.
-        change "create user couchadmin (key-only SSH, password locked, groups systemd-journal adm)" \
-            useradd --create-home --shell /bin/bash --groups systemd-journal,adm --comment "couchbox admin" couchadmin
-        if [ "$DRY_RUN" -eq 0 ]; then passwd -l couchadmin >/dev/null; fi
+        # Key-only admin for remote validation: no usable password, read access to the journal, no sudo.
+        change "create user couchadmin (key-only SSH, no password, groups systemd-journal adm)" \
+            useradd --create-home --shell /bin/bash --groups systemd-journal,adm --comment "couchbox admin" \
+            --password '*' couchadmin
+    fi
+    # NEVER `passwd -l` / `usermod -L` this account: that prefixes the shadow hash with "!", and OpenSSH on Linux
+    # refuses a "!"-locked account for EVERY auth method ("User couchadmin not allowed because account is locked"),
+    # so the key-only login was dead on the first real NUC (2026-11-04). "*" = no password, keys allowed.
+    if [ "$DRY_RUN" -eq 0 ] && getent shadow couchadmin | cut -d: -f2 | grep -q '^!'; then
+        change "unlock couchadmin for key-only SSH (shadow '!' -> '*')" usermod -p '*' couchadmin
     fi
     local home=/home/couchadmin
     if [ "$DRY_RUN" -eq 0 ]; then home="$(getent passwd couchadmin | cut -d: -f6)"; fi

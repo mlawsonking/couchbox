@@ -157,7 +157,7 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 - **Stream display:** a Sunshine `global_prep_cmd` (not per-app) so every app, including the two pre-existing ones,
   gets the switch. The mode change is not persisted (a reboot also restores); the logon task covers a stream that
   ended without `undo`. A virtual display driver is documented as the alternative, not installed.
-- **Admin access:** `couchadmin` is key-only (password locked) with `systemd-journal`/`adm` groups and **no sudo**, so
+- **Admin access:** `couchadmin` is key-only (shadow password `*`: no password, never `passwd -l`, which makes sshd refuse keys too) with `systemd-journal`/`adm` groups and **no sudo**, so
   the remote key can read health and logs but not change the box. The console admin created by autoinstall has sudo,
   a password Michael types at USB-build time, and no SSH key.
 - **moonlight-qt is extracted, not mounted:** the AppImage is unpacked into `/opt/couch/moonlight/<version>` (no FUSE
