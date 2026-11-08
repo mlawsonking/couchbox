@@ -1,7 +1,16 @@
-# couch-kiosk: cage (Wayland kiosk compositor) on tty1 running /opt/couch/bin/kiosk as the unprivileged "couch" user.
-# Installed by couchbox installer/install.sh. getty@tty1 is masked so there is never a login prompt on the TV.
+# couch-kiosk: a plain Xorg server on tty1 running /opt/couch/bin/kiosk (the Couch launcher) as the unprivileged
+# "couch" user. Installed by couchbox installer/install.sh. getty@tty1 is masked so there is never a login prompt
+# on the TV.
+#
+# Why Xorg and not cage (the Wayland kiosk compositor the first build used): cage 0.1.5 / wlroots 0.17 (Ubuntu
+# 24.04) segfaults in libwayland-server the moment moonlight-qt's Xwayland window appears - 6/6 streams on the real
+# NUC on 2026-11-05 and again 2026-11-08: moonlight.log "The X11 connection broke (error 1)" right after the first
+# decoded frame, "cage[...]: segfault ... in libwayland-server.so" in the kernel log, couch-kiosk "code=dumped,
+# status=11/SEGV", restarted by systemd 2 s later, launcher back on the tiles. moonlight-qt's AppImage ships only
+# the xcb Qt plugin, so it is an X11 client either way; a bare X server (modesetting + glamor, no window manager)
+# runs the launcher and the stream directly. Proven by hand on the NUC 2026-11-05 (xinit moonlight-qt stream).
 [Unit]
-Description=couchbox kiosk (cage -> /opt/couch/bin/kiosk on tty1)
+Description=couchbox kiosk (Xorg -> /opt/couch/bin/kiosk on tty1)
 After=systemd-user-sessions.service plymouth-quit-wait.service systemd-logind.service
 After=couch-firstboot.service
 Conflicts=getty@tty1.service
@@ -16,10 +25,15 @@ WorkingDirectory=/var/lib/couch/home
 Environment=HOME=/var/lib/couch/home
 Environment=XDG_CONFIG_HOME=/var/lib/couch/home/.config
 Environment=COUCH_CONFIG=/etc/couch/couch.toml
-# -d: no client-side decorations; -s: allow VT switching for the admin. No cursor: cage hides it without a pointer.
-ExecStart=/usr/bin/cage -d -s -- /opt/couch/bin/kiosk
+# xinit starts the server, then the client (DISPLAY=:0 set for it); when the client exits it stops the server and
+# exits itself -> Restart=always brings the kiosk back. Server: display :0 on this VT, keep the tty, no TCP
+# listener, no cursor (gamepad only). Both programs are given explicitly, so no ~/.xinitrc / ~/.xserverrc is read.
+# Xorg itself runs through the setuid Xorg.wrap (package xserver-xorg-legacy); the installer writes
+# /etc/X11/Xwrapper.config with allowed_users=anybody because this service user is not a console login.
+ExecStart=/usr/bin/xinit /opt/couch/bin/kiosk -- /usr/bin/X :0 vt1 -keeptty -nolisten tcp -nocursor
 Restart=always
 RestartSec=2
+TimeoutStopSec=10
 # A logind session on seat0 gives the user DRM master + input device ACLs.
 PAMName=login
 TTYPath=/dev/tty1
@@ -31,22 +45,11 @@ StandardOutput=journal
 StandardError=journal
 UtmpIdentifier=tty1
 UtmpMode=user
-# Hardening that does not break DRM/input/audio access.
-NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=/var/lib/couch /var/log/couch /etc/couch/gamepads.txt
-ProtectHome=yes
-PrivateTmp=yes
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
-ProtectControlGroups=yes
-ProtectClock=yes
-ProtectHostname=yes
-RestrictSUIDSGID=yes
-RestrictNamespaces=yes
-LockPersonality=yes
-SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Sandboxing: deliberately NONE beyond the user and groups. The first build's hardening block broke the kiosk on the
+# real NUC (2026-11-04: inside the private mount namespace /run/user/<uid> did not exist, the compositor could not
+# open its socket and hung in waitpid on the PAM helper; the field fix was a drop-in lifting every directive), and
+# the setuid Xorg.wrap needs NoNewPrivileges unset. Re-add directives one at a time, each followed by
+# /opt/couch/bin/couch-streamtest on the box.
 
 [Install]
 WantedBy=multi-user.target

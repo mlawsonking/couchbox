@@ -58,6 +58,15 @@ check_mode() { # path mode owner
 }
 check_mode /opt/couch/bin/kiosk 755 root:root
 check_mode /opt/couch/bin/couch-doctor 755 root:root
+check_mode /opt/couch/bin/couch-streamtest 755 root:root
+check_mode /opt/couch/bin/couch-display-power 755 root:root
+check_mode /etc/X11/Xwrapper.config 644 root:root
+grep -q '^allowed_users=anybody' /etc/X11/Xwrapper.config || fail "Xwrapper.config does not allow the service user to start Xorg"
+grep -q 'xinit /opt/couch/bin/kiosk -- /usr/bin/X :0 vt1' /etc/systemd/system/couch-kiosk.service || fail "kiosk unit does not start Xorg via xinit"
+! grep -q '^ExecStart=.*cage' /etc/systemd/system/couch-kiosk.service || fail "kiosk unit still runs cage"
+/opt/couch/bin/couch-streamtest --help >/dev/null || fail "couch-streamtest --help"
+grep -q 'xvfb-run' /opt/couch/bin/moonlight-qt || fail "moonlight wrapper lacks the headless xvfb branch"
+dpkg-query -W -f='${Status}' xserver-xorg-core xinit xserver-xorg-legacy | grep -c 'install ok installed' | grep -qx 3 || fail "Xorg/xinit/legacy wrapper packages missing"
 check_mode /opt/couch/bin/moonlight-qt 755 root:root
 check_mode /opt/couch/app/couch/launcher/app.py 644 root:root
 check_mode /etc/couch 750 root:couch

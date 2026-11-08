@@ -43,6 +43,29 @@ teardown() { rm -rf "$TMP"; }
     [[ "$output" == *"fetch xone"* && "$output" == *"couch-xone-blacklist.conf"* && "$output" != *"fetch xpadneo"* ]]
 }
 
+@test "kiosk unit: Xorg via xinit on tty1, never cage; Xwrapper allows the service user" {
+    grep -q '^ExecStart=/usr/bin/xinit /opt/couch/bin/kiosk -- /usr/bin/X :0 vt1 ' "$REPO/installer/files/systemd/couch-kiosk.service"
+    ! grep -q '^ExecStart=.*cage' "$REPO/installer/files/systemd/couch-kiosk.service"
+    grep -q '^allowed_users=anybody' "$REPO/installer/files/X11/Xwrapper.config"
+    grep -q 'Xwrapper.config' "$REPO/installer/install.sh"
+    grep -q 'xserver-xorg-core xserver-xorg-legacy' "$REPO/installer/install.sh"
+    ! grep -qE '^ +cage ' "$REPO/installer/install.sh"
+}
+
+@test "kiosk script is an X11 client (xcb + SDL x11) and sets XDG_RUNTIME_DIR" {
+    grep -q 'QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"' "$REPO/couch/bin/kiosk"
+    grep -q 'SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"' "$REPO/couch/bin/kiosk"
+    grep -q 'XDG_RUNTIME_DIR="/run/user/' "$REPO/couch/bin/kiosk"
+}
+
+@test "couch-streamtest --help and couch-display-power usage run" {
+    run python3 "$REPO/couch/bin/couch-streamtest" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--hold"* ]]
+    run "$REPO/couch/bin/couch-display-power"
+    [ "$status" -eq 2 ]
+}
+
 @test "the VA-API package list includes intel-media-va-driver (iHD)" {
     grep -qE '^\s+mesa-va-drivers intel-media-va-driver ' "$REPO/installer/install.sh"
 }

@@ -240,6 +240,13 @@ def test_no_ntfy_without_url(daemon, monkeypatch):
 
 def test_parse_list_variants():
     assert D.parse_list("Desktop\n\nSteam Big Picture\nDesktop\n") == ["Desktop", "Steam Big Picture"]
+    # stderr chatter of the real AppImage on the NUC (merged into the output by the runner) is not an app
+    noisy = ("libEGL warning: DRI3 error: Could not get DRI3 device\n"
+             "libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering\n"
+             "00:00:00 - Qt Warning: QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-couch'\n"
+             '"applist" request failed with error: QNetworkReply::OperationCanceledError\n'
+             "BONEWORKS\nRetro\nSteam Big Picture\n")
+    assert D.parse_list(noisy) == ["BONEWORKS", "Retro", "Steam Big Picture"]
     assert D.parse_list('Name, ID, HDR Supported, App Collection Game, Hidden\n"Celeste", 12, false, false, false\n') \
         == ["Celeste"]
 

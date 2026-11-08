@@ -69,17 +69,82 @@ class Child:
             return ""
 
 
+INFLIGHT = "stream-inflight.json"
+KIOSK_CRASH = "kiosk-crash"      # streams.jsonl outcome when the launcher itself died under a stream
+
+
+def _append_stream(entry: dict, path: str) -> None:
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
 def record_stream(app: str, started: float, code: int | None, path: str | None = None) -> None:
     """Append to the stream history couch-doctor shows (last streams, durations, exit codes)."""
     path = path or os.path.join(STATE_DIR, "streams.jsonl")
     entry = {"app": app, "start": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() -
                                                                                      (time.monotonic() - started))),
              "duration_s": round(time.monotonic() - started, 1), "exit_code": code}
+    _append_stream(entry, path)
     try:
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        os.unlink(os.path.join(os.path.dirname(path), INFLIGHT))
     except OSError:
         pass
+
+
+def mark_inflight(app: str, state_dir: str | None = None, log_dir: str | None = None) -> None:
+    """Written the moment a moonlight-qt child is spawned and removed when its exit is recorded. If it is still
+    there when the launcher next starts, the launcher (and with it the stream) died: see finalize_crashed_stream."""
+    state_dir, log_dir = state_dir or STATE_DIR, log_dir or LOG_DIR
+    ml = os.path.join(log_dir, "moonlight.log")
+    try:
+        offset = os.path.getsize(ml)
+    except OSError:
+        offset = 0
+    try:
+        with open(os.path.join(state_dir, INFLIGHT), "w", encoding="utf-8") as fh:
+            json.dump({"app": app, "start_epoch": time.time(), "moonlight_log_offset": offset}, fh)
+    except OSError:
+        pass
+
+
+def finalize_crashed_stream(state_dir: str | None = None, log_dir: str | None = None) -> dict | None:
+    """Launcher start-up: turn a leftover in-flight marker into a streams.jsonl entry (outcome kiosk-crash, with the
+    moonlight.log lines written during that stream) and clear a stale `streaming` flag, so couch-doctor and the
+    daemon see what happened instead of "no streams yet" / "a stream is running". The 2026-11-05/08 crash class:
+    the compositor segfaulted when moonlight's window appeared and took the launcher with it, so nothing was ever
+    recorded. Returns the entry, or None when the last launcher exit was clean."""
+    state_dir, log_dir = state_dir or STATE_DIR, log_dir or LOG_DIR
+    flag = os.path.join(state_dir, "streaming")
+    marker = os.path.join(state_dir, INFLIGHT)
+    try:
+        os.unlink(flag)
+    except OSError:
+        pass
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            m = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    try:
+        os.unlink(marker)
+    except OSError:
+        pass
+    start = float(m.get("start_epoch") or time.time())
+    tail: list[str] = []
+    try:
+        with open(os.path.join(log_dir, "moonlight.log"), "rb") as fh:
+            fh.seek(int(m.get("moonlight_log_offset") or 0))
+            tail = [ln for ln in fh.read().decode("utf-8", "replace").splitlines() if ln.strip()][-12:]
+    except (OSError, ValueError):
+        pass
+    entry = {"app": m.get("app", ""), "start": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(start)),
+             "duration_s": round(max(0.0, time.time() - start), 1), "exit_code": None, "outcome": KIOSK_CRASH,
+             "moonlight_tail": tail}
+    _append_stream(entry, os.path.join(state_dir, "streams.jsonl"))
+    return entry
 
 
 class Prober(threading.Thread):
@@ -146,10 +211,15 @@ class LocalBackend:
     def stream_argv(self, app: str) -> list[str]:
         return self.cfg.stream_argv(self.moonlight, self.cfg.host, app)
 
+    def spawn_stream(self, argv: list[str]) -> Child:
+        """The one place a moonlight-qt stream child is created (LocalBackend and DaemonBackend)."""
+        mark_inflight(self.stream_app)
+        return Child(argv, "moonlight.log")
+
     def start_stream(self, app: str) -> None:
         self.stop_stream()
         self.stream_app = app
-        self.stream = Child(self.stream_argv(app), "moonlight.log")
+        self.stream = self.spawn_stream(self.stream_argv(app))
 
     def stream_status(self) -> tuple[str, int | None]:
         if self.stream is None:

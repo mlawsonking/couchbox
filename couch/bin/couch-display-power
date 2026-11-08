@@ -1,0 +1,10 @@
+#!/bin/sh
+# /opt/couch/bin/couch-display-power on|off - the launcher's display-sleep hook: after 60 min idle on the home screen
+# it draws black and calls "off"; the first gamepad press calls "on". Under the Xorg kiosk this is DPMS through xset
+# on the launcher's own DISPLAY. Never fails the caller: a TV that ignores DPMS simply stays on the black screen.
+case "${1:-}" in
+    off) xset dpms force off ;;
+    on)  xset dpms force on; xset s reset ;;
+    *) echo "usage: couch-display-power on|off" >&2; exit 2 ;;
+esac >/dev/null 2>&1 || true
+exit 0

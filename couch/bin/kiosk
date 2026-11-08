@@ -1,5 +1,6 @@
 #!/bin/bash
-# /opt/couch/bin/kiosk - the program cage runs full-screen on the TV.
+# /opt/couch/bin/kiosk - the program the kiosk's X server runs full-screen on the TV (xinit client, see
+# installer/files/systemd/couch-kiosk.service).
 # Prefers the Couch launcher (pygame-ce). If the launcher is missing, cannot import pygame, or has crashed 3 times
 # in a row within a minute of starting, falls back to moonlight-qt's own gamepad-navigable GUI so the TV always
 # shows something that can start a stream. (Phase 1 shipped with only the fallback.)
@@ -8,10 +9,24 @@ COUCH_ROOT="${COUCH_ROOT:-/opt/couch}"
 LOG_DIR="${COUCH_LOG_DIR:-/var/log/couch}"
 STATE_DIR="${COUCH_STATE_DIR:-/var/lib/couch}"
 STRIKES_FILE="$STATE_DIR/launcher-strikes"
-export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
+# Everything here is an X11 client (xinit set DISPLAY): Qt's xcb plugin (the only one in the moonlight-qt AppImage)
+# and SDL's x11 driver for the launcher.
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
+# pam_systemd creates /run/user/<uid> for the kiosk's logind session, but the variable does not reach the service's
+# environment; without it Qt falls back to /tmp/runtime-couch (moonlight.log "XDG_RUNTIME_DIR not set").
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+fi
 
 log() { printf '%s kiosk: %s\n' "$(date -Is)" "$*" >>"$LOG_DIR/kiosk.log" 2>/dev/null || true; }
 strikes() { cat "$STRIKES_FILE" 2>/dev/null || echo 0; }
+
+# A kiosk never blanks on its own: the X server's screen saver and DPMS timeouts are off; the launcher dims the TV
+# after 10 min and switches it off after 60 min idle through couch-display-power (xset dpms force off/on).
+if [ -n "${DISPLAY:-}" ] && command -v xset >/dev/null 2>&1; then
+    xset s off s noblank dpms 0 0 0 >/dev/null 2>&1 || log "xset failed (screen blanking stays at X defaults)"
+fi
 
 fallback() {
     log "starting moonlight-qt fallback GUI ($1)"

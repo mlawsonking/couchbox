@@ -9,7 +9,7 @@ Placeholders: `gamepc.local` (the workstation's name), `AA:BB:CC:DD:EE:FF` (its 
 | Machine | What | Owner of the change |
 |---|---|---|
 | Workstation (Windows 11, garage) | Sunshine (host), iperf3 probe, WoL settings | `workstation/*.ps1`, run by Michael, elevated |
-| NUC (Ubuntu Server 24.04, living room TV) | cage kiosk -> Couch launcher -> moonlight-qt; couch-daemon; couch-maint timer | `installer/install.sh` |
+| NUC (Ubuntu Server 24.04, living room TV) | Xorg kiosk (xinit on tty1) -> Couch launcher -> moonlight-qt; couch-daemon; couch-maint timer | `installer/install.sh` |
 | Media server | Fable: SSH validation as `couchadmin`, reads `http://couchbox.local:7777/health` | - |
 
 ## 1. Workstation first (M3)
@@ -150,14 +150,22 @@ curl -s -XPOST -H 'X-Couch: 1' http://127.0.0.1:7777/wake
 curl -s -XPOST -H 'X-Couch: 1' -d '{"app":"Desktop","launch":true}' http://127.0.0.1:7777/stream   # TV starts it
 curl -s -XPOST -H 'X-Couch: 1' http://127.0.0.1:7777/quit
 curl -s -XPOST -H 'X-Couch: 1' -d '{"measure":true}' http://127.0.0.1:7777/doctor               # 10 s iperf3
+/opt/couch/bin/couch-streamtest --hold 60     # starts "Desktop" on the TV, proves it holds 60 s, quits it; exit 0 = PASS
 ```
+
+`couch-streamtest` is the proof for the stream-crash class seen 2026-11-05/08 (every stream died ~1 s in because the
+kiosk compositor segfaulted when Moonlight's window appeared): it fails with "kiosk restarted during the stream" and
+prints moonlight.log's last lines plus the couch-kiosk journal. The doctor's `streams` line goes red for the same
+class (the next launcher start records a stream whose launcher died as `kiosk-crash`), and its `services` line
+warns when couch-kiosk has restarted 3+ times since boot. Run it with the TV free: it really streams.
 
 From the LAN (read-only): `http://couchbox.local:7777/health` (JSON) and `http://couchbox.local:7777/` (page).
 Every other path from the LAN is 404. The daemon reruns the doctor every 5 minutes and the 10 s throughput probe
 hourly (never during a stream); an `ntfy_url` gets one POST each time the box turns red.
 
-Files worth reading: `/var/log/couch/{install,launcher,kiosk,moonlight}.log`, `/var/lib/couch/streams.jsonl` (last
-streams), `link.json` (measured link + chosen quality), `xone-status.json` (gamepad driver vs. kernel).
+Files worth reading: `/var/log/couch/{install,launcher,kiosk,moonlight}.log`, `/var/log/Xorg.0.log` (the kiosk's X
+server), `journalctl -b -u couch-kiosk` (crashes/restarts), `/var/lib/couch/streams.jsonl` (last streams, `outcome:
+kiosk-crash` when the launcher died under one), `link.json` (measured link + chosen quality), `xone-status.json` (gamepad driver vs. kernel).
 
 ## 8. Updates and rollback
 

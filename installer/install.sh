@@ -5,9 +5,10 @@
 #
 # Idempotent: every step checks current state first; a second run reports "changes: 0".
 # Touches ONLY: the packages listed below, /opt/couch, /etc/couch, /var/lib/couch, /var/log/couch, couch-* systemd
-# units (+ the couch journald drop-in), the getty@tty1 mask, couch unattended-upgrades config, the users "couch" and
-# "couchadmin", and - for the gamepad drivers it names (xone, xpadneo) - their DKMS trees under /usr/src, their
-# modprobe blacklist and the dongle firmware in /lib/firmware. It never partitions or formats anything.
+# units (+ the couch journald drop-in), the getty@tty1 mask, /etc/X11/Xwrapper.config (Xorg may be started by the
+# kiosk's service user), couch unattended-upgrades config, the users "couch" and "couchadmin", and - for the gamepad
+# drivers it names (xone, xpadneo) - their DKMS trees under /usr/src, their modprobe blacklist and the dongle
+# firmware in /lib/firmware. It never partitions or formats anything.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -136,8 +137,13 @@ decide_mode() {
 }
 
 # ---------------------------------------------------------------- packages
+# Kiosk display stack = a plain Xorg server (xinit on tty1, see installer/files/systemd/couch-kiosk.service), NOT the
+# cage Wayland compositor of the first build: cage 0.1.5/wlroots 0.17 segfaults when moonlight-qt's Xwayland window
+# appears (NUC, 2026-11-05/08). xserver-xorg-legacy = the setuid Xorg.wrap a service user needs; libgl1-mesa-dri =
+# glamor on the Intel GPU; xvfb = virtual X for the daemon's headless `moonlight-qt list` (xcb-only AppImage).
 PACKAGES_BASE=(
-    cage xwayland seatd libinput-bin
+    xserver-xorg-core xserver-xorg-legacy xserver-xorg-input-libinput xinit x11-xserver-utils xvfb libgl1-mesa-dri
+    libinput-bin
     mesa-va-drivers intel-media-va-driver i965-va-driver vainfo libva-drm2 libegl1 libgl1 libgles2
     python3 python3-venv
     fonts-dejavu-core
@@ -314,6 +320,8 @@ ensure_files() {
     section "couch files"
     local f="$SCRIPT_DIR/files"
     ensure_file "$REPO_DIR/couch/bin/kiosk" "$COUCH_OPT/bin/kiosk" 0755 root:root
+    ensure_file "$REPO_DIR/couch/bin/couch-display-power" "$COUCH_OPT/bin/couch-display-power" 0755 root:root
+    ensure_file "$REPO_DIR/couch/bin/couch-streamtest" "$COUCH_OPT/bin/couch-streamtest" 0755 root:root
     ensure_file "$REPO_DIR/couch/doctor/couch-doctor" "$COUCH_OPT/bin/couch-doctor" 0755 root:root
     ensure_file "$REPO_DIR/couch/bin/couch-maint" "$COUCH_OPT/bin/couch-maint" 0755 root:root
     ensure_file "$REPO_DIR/couch/bin/couch-update" "$COUCH_OPT/bin/couch-update" 0755 root:root
@@ -327,6 +335,8 @@ ensure_files() {
     ensure_file "$f/systemd/couch-maint.service" "$UNIT_DIR/couch-maint.service" 0644 root:root
     ensure_file "$f/systemd/couch-maint.timer" "$UNIT_DIR/couch-maint.timer" 0644 root:root
     ensure_file "$f/kernel/zz-couch-xone-check" /etc/kernel/postinst.d/zz-couch-xone-check 0755 root:root
+    # Xorg.wrap policy: the kiosk starts Xorg as the "couch" service user (not a console login) -> allowed_users=anybody.
+    ensure_file "$f/X11/Xwrapper.config" /etc/X11/Xwrapper.config 0644 root:root
     if ! cmp -s "$f/journald/couch-journald.conf" /etc/systemd/journald.conf.d/couch.conf; then JOURNALD_CHANGED=1; fi
     ensure_file "$f/journald/couch-journald.conf" /etc/systemd/journald.conf.d/couch.conf 0644 root:root
     ensure_file "$f/apt/52couch-unattended-upgrades" /etc/apt/apt.conf.d/52couch-unattended-upgrades 0644 root:root
@@ -375,6 +385,11 @@ write_moonlight_wrapper() {
     cat >"$1" <<'EOF'
 #!/bin/sh
 # moonlight-qt wrapper (couchbox): runs the extracted, sha256-pinned AppImage selected by /opt/couch/moonlight/current.
+# This build ships only the xcb platform plugin, so headless callers (couch-daemon sets QT_QPA_PLATFORM=offscreen for
+# `moonlight-qt list`) get a virtual X server; the launcher's own DISPLAY is left alone. (NUC field fix 2026-11-05.)
+if [ "${QT_QPA_PLATFORM:-}" = "offscreen" ] && [ -z "${DISPLAY:-}" ] && command -v xvfb-run >/dev/null 2>&1; then
+    QT_QPA_PLATFORM=xcb exec xvfb-run -a /opt/couch/moonlight/current/AppRun "$@"
+fi
 exec /opt/couch/moonlight/current/AppRun "$@"
 EOF
     chmod 0755 "$1"

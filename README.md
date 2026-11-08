@@ -19,7 +19,9 @@ installer/pins.env            pinned moonlight-qt AppImage (sha256), xone + xpad
 installer/make-usb.sh         stock 24.04 live-server ISO -> unattended couchbox installer ISO (--disk required)
 installer/autoinstall/        user-data template + disk-guard.sh (refuses to guess a disk)
 installer/files/              systemd units, journald cap, unattended-upgrades (security only), couch.toml example
-couch/bin/kiosk               what cage runs on the TV: the Couch launcher, falling back to moonlight-qt's GUI
+couch/bin/kiosk               what the kiosk's X server runs on the TV: the Couch launcher, falling back to moonlight-qt's GUI
+couch/bin/couch-streamtest    SSH tool: start a stream on the TV and prove it holds 60 s (kiosk pid stable, clean quit)
+couch/bin/couch-display-power the launcher's TV sleep/wake hook (xset dpms)
 couch/launcher/               the 10-foot launcher (pygame-ce): config, state machine, input, renderer, backend
 couch/net.py                  WoL magic packet, IPv4 resolve, Sunshine port probe (stdlib; shared with the daemon)
 couch/requirements.lock       pygame-ce 2.5.2, hash-pinned: the only pip dependency, in /opt/couch/venv
@@ -60,7 +62,7 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 | moonlight-qt sha256 pin enforced (wrong hash refused, nothing installed) | yes, with a fixture AppImage | the real 6.2.0 AppImage hash was verified once in the build session; extraction + playback on the NUC |
 | Refuses non-24.04 / unknown options; never partitions | yes: bats | - |
 | Installer chroot (autoinstall) path defers DKMS + start to first boot | yes: rehearsal `systemd` mode (systemd installed, not PID 1) | the actual first boot completing |
-| systemd units valid | yes: `systemd-analyze verify` in the rehearsal | cage actually taking DRM master on tty1, no login prompt, no cursor |
+| systemd units valid | yes: `systemd-analyze verify` in the rehearsal | Xorg (via the setuid Xorg.wrap, xinit on tty1) actually taking DRM master, no login prompt, no cursor |
 | autoinstall user-data valid | yes: rendered for 3 variants, validated against subiquity's JSON schema + yamllint | the USB really installing unattended (ISO repack via xorriso not exercised in CI: needs the 2.6 GB ISO) |
 | disk guard refuses ambiguity | yes: bats with a fake `lsblk` | the NUC's real `lsblk` output |
 | Default install needs no out-of-tree gamepad driver and never blacklists `xpad` (the couch's receiver is 045E:028E -> xpad); a stale couchbox xpad blacklist is removed | yes: bats (dry-run plans with and without `--with-xone`) + rehearsal (file absent, stale file removed, idempotent) | the receiver on the NUC |
@@ -77,7 +79,7 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 | Frame budget < 8 ms at 4K on CPU | yes: p95 of steady-state frames per screen (actual: < 1 ms on CI CPUs) | the NUC's CPU |
 | moonlight-qt child supervision (argv, exit codes, not-paired detection, a hung child that ignores SIGTERM is killed and reaped in < 5 s) | yes: a fake moonlight-qt CLI | real moonlight-qt exit codes/messages (the not-paired text match is a guess at its wording) |
 | Bad config (syntax error, wrong types, bad MAC, IP instead of name, art URLs) never crashes; hot reload | yes: pytest | - |
-| venv holds only pygame-ce, from the hash-pinned lock; the launcher renders every screen as user `couch` in Ubuntu 24.04 | yes: container rehearsal (`--selftest`) | under cage on real DRM (Wayland first, XWayland fallback) |
+| venv holds only pygame-ce, from the hash-pinned lock; the launcher renders every screen as user `couch` in Ubuntu 24.04 | yes: container rehearsal (`--selftest`) | on the real Xorg kiosk (SDL x11) |
 | Launcher crash loop -> moonlight-qt GUI fallback, then retry | yes: bats | - |
 | Daemon allow-list: only the listed actions, anything else 404; actions loopback-only; LAN gets /health and / only; `X-Couch` header required; body size cap | yes: pytest on a real `ThreadingHTTPServer`, including requests from this machine's real non-loopback address | - |
 | WoL packet bytes exact, only ever to the configured MAC (a MAC in the request body is ignored) | yes | the workstation actually waking (NIC + BIOS + Fast Startup, acceptance 3) |
@@ -104,8 +106,9 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
   `/var/lib/couch/art` (`couch-update --import <path|url>`, P3) and read from disk; tiles without art get a generated
   title card. Not relying on moonlight-qt's private box-art cache: its location/format is an implementation detail
   that can change with any Moonlight update, and it is only filled after the GUI has loaded the host once.
-- **Child process vs. seat handover:** moonlight-qt runs as a **child of the launcher inside the same cage session**
-  (cage shows the newest toplevel full-screen; when the child exits the launcher is on top again). No seat/VT
+- **Child process vs. seat handover:** moonlight-qt runs as a **child of the launcher on the same X server**
+  (a bare Xorg without a window manager maps the newest window on top; when the child exits the launcher is
+  visible again). No seat/VT
   handover, so there is never a moment where the TV shows a console.
 - **Palette:** near-black navy background, white text, and Okabe-Ito colour-blind-safe hues (yellow focus ring,
   bluish-green OK, orange warning, vermillion error). State is never shown by colour alone: every badge has a word
@@ -118,7 +121,7 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 - **Font:** pygame's bundled font, so golden renders are identical everywhere and nothing extra is installed.
 - **Launcher vs. daemon split (P3):** the daemon is the gate (WoL to the configured MAC only, `stream` only for apps
   from `moonlight-qt list`, host discovery, doctor/health/ntfy loop) and runs as the unprivileged `couch` user; the
-  launcher still runs the moonlight-qt child so it stays inside the cage session. Daemon `stream`/`quit`/`pair`/
+  launcher still runs the moonlight-qt child so it stays inside the kiosk's X session. Daemon `stream`/`quit`/`pair`/
   `restart` from loopback (e.g. Fable over SSH) queue a request the launcher picks up within 1 s, so remote tests go
   through exactly the same state machine as the gamepad. Without the daemon the launcher falls back to sending WoL
   and running moonlight-qt itself.
@@ -127,7 +130,7 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 - **Watchdog:** `couch-daemon` is `Type=notify` with `WatchdogSec=30` and pets the watchdog only while both its HTTP
   and background threads are alive. The kiosk has no watchdog: when it falls back to moonlight-qt's GUI nothing could
   pet it; crashes are handled by `Restart=always` and the 3-strike launcher fallback.
-- **Display sleep:** no DPMS tool for cage is in Ubuntu's archive, so after 60 min the launcher shows black and calls
+- **Display sleep:** after 60 min idle the launcher shows black and calls
   `/opt/couch/bin/couch-display-power` only if someone installs one (needs the real TV to choose CEC vs. DPMS).
 - **Workstation kit details (P4):**
   - Sunshine app forms follow the current docs and its shipped Windows `apps.json`: Desktop = `image-path` only;
@@ -173,3 +176,14 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 - [x] P3 daemon + self-healing
 - [x] P4 workstation PowerShell kit
 - [x] P5 CI + RUNBOOK / TESTPLAN / FAILURE-SCREENS / PLAN-B-WINDOWS
+
+## Why Xorg, not cage (2026-11-08)
+
+The first build ran the kiosk under `cage` (wlroots Wayland compositor). On the real NUC cage 0.1.5 segfaulted in
+libwayland-server the moment moonlight-qt's Xwayland window appeared - every stream died after the first decoded
+frame (`The X11 connection broke` in moonlight.log, `code=dumped, status=11/SEGV` for couch-kiosk, the launcher back
+on the tiles 4 s later). moonlight-qt's AppImage only has the xcb Qt plugin, so it is an X11 client either way; the
+kiosk is now a bare Xorg server started by `xinit` on tty1 (`installer/files/systemd/couch-kiosk.service`), with
+`/etc/X11/Xwrapper.config` allowing the service user to start it. `couch/bin/couch-streamtest` proves a stream holds;
+`couch-doctor` marks a stream that took the kiosk down as red (`streams` line, with moonlight's last lines) and warns
+on kiosk restart storms (`services` line).

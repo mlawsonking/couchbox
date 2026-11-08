@@ -77,7 +77,10 @@ class Config:
         """The one place a moonlight-qt stream command line is built (launcher and daemon both use it).
         HDR is never requested (moonlight-qt's default is SDR); v1 does not target HDR."""
         res, fps, kbps = self.stream_params(measured_rung)
-        argv = [moonlight, "stream", target, app, "--quit-after", "--display-mode", "fullscreen",
+        # borderless, not fullscreen: under the bare Xorg kiosk (no window manager) "fullscreen" drew the 1080p
+        # stream 1:1 in a corner of the 4K screen; "borderless" is a screen-sized window the stream is scaled into
+        # (NUC, 2026-11-05).
+        argv = [moonlight, "stream", target, app, "--quit-after", "--display-mode", "borderless",
                 "--resolution", res, "--fps", str(fps), "--bitrate", str(kbps), "--video-decoder", "hardware"]
         codec = self.stream_codec(res)
         if codec:

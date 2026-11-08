@@ -1,0 +1,247 @@
+#!/usr/bin/python3
+"""couch-streamtest - prove a stream HOLDS on the real NUC (stdlib only; run over SSH as couchadmin, no root).
+
+  couch-streamtest [--app "Desktop"] [--hold 60] [--start-timeout 90] [--json]
+
+Asks couch-daemon (127.0.0.1:7777, loopback-only actions) to start APP on the TV exactly as a tile press would,
+then for HOLD seconds checks every second that
+  1. the moonlight-qt child is still running (the launcher's /var/lib/couch/streaming flag stays),
+  2. couch-kiosk.service kept its main PID and restart count (the X server / launcher did not die under the stream),
+  3. the launcher never logged "-> LOST" or came back up ("launcher up" = it was restarted),
+then sends /quit and checks the launcher returned to IDLE and no moonlight-qt process is left (TESTPLAN item 5).
+Exit 0 = PASS, 1 = FAIL (with the reason, the moonlight.log tail and the kiosk journal), 2 = could not run.
+
+The crash class this exists for (2026-11-05/08): every stream died about a second in because the kiosk compositor
+(cage) segfaulted when Moonlight's window appeared; the launcher died with it, nothing was recorded, and the TV just
+showed the tiles again. Here that is "kiosk restarted during the stream" within the first seconds.
+"""
+from __future__ import annotations
+
+import argparse
+import http.client
+import json
+import os
+import subprocess
+import sys
+import time
+
+PORT = int(os.environ.get("COUCH_DAEMON_PORT", "7777"))
+STATE = os.environ.get("COUCH_STATE_DIR", "/var/lib/couch")
+LOGS = os.environ.get("COUCH_LOG_DIR", "/var/log/couch")
+UNIT = "couch-kiosk.service"
+
+
+def http(method: str, path: str, body: dict | None = None, timeout: float = 45.0) -> tuple[int, dict]:
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=timeout)
+    try:
+        data = json.dumps(body).encode() if body is not None else None
+        c.request(method, path, body=data, headers={"X-Couch": "1", "Content-Type": "application/json"})
+        r = c.getresponse()
+        raw = r.read()
+        try:
+            return r.status, json.loads(raw or b"{}")
+        except ValueError:
+            return r.status, {"raw": raw.decode("utf-8", "replace")[:300]}
+    finally:
+        c.close()
+
+
+def run(argv: list[str], timeout: float = 15.0) -> str:
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def parse_show(text: str) -> dict:
+    """{'MainPID': '1234', 'NRestarts': '0', 'ActiveState': 'active'} from `systemctl show -p ...` output."""
+    d = {}
+    for line in text.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            d[k.strip()] = v.strip()
+    return d
+
+
+def kiosk_show(runner=run) -> dict:
+    return parse_show(runner(["systemctl", "show", "-p", "MainPID", "-p", "NRestarts", "-p", "ActiveState", UNIT]))
+
+
+def size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def read_from(path: str, offset: int) -> str:
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def tail(text: str, n: int = 15) -> list[str]:
+    return [ln for ln in text.splitlines() if ln.strip()][-n:]
+
+
+def moonlight_running(runner=run) -> bool:
+    return bool(runner(["pgrep", "-f", "moonlight/current/AppRun"]).strip())
+
+
+def journal_since(epoch: float, runner=run) -> list[str]:
+    since = f"@{int(epoch)}"
+    lines = runner(["journalctl", "-b", "--no-pager", "-o", "short-iso", "--since", since, "-u", UNIT]).splitlines()
+    lines += [ln for ln in runner(["journalctl", "-b", "-k", "--no-pager", "-o", "short-iso", "--since",
+                                   since]).splitlines() if "segfault" in ln.lower()]
+    return [ln for ln in lines if ln.strip() and not ln.startswith("-- ")][-20:]
+
+
+class Watch:
+    """The pure judgement, fed one observation per second. step() returns None to keep going, else the failure;
+    passed(now) is True once the stream has held for `hold` seconds without a failure."""
+
+    def __init__(self, base: dict, hold: float, started_at: float):
+        self.base = base
+        self.hold = hold
+        self.started_at = started_at
+        self.failure: str | None = None
+
+    def step(self, now: float, show: dict, flag_present: bool, launcher_new: str) -> str | None:
+        ran = now - self.started_at
+        if show.get("MainPID") != self.base.get("MainPID") or show.get("NRestarts") != self.base.get("NRestarts"):
+            self.failure = (f"kiosk restarted during the stream after {ran:.1f} s (main pid "
+                            f"{self.base.get('MainPID')} -> {show.get('MainPID')}, restarts "
+                            f"{self.base.get('NRestarts')} -> {show.get('NRestarts')}): the X server or the launcher "
+                            f"died under the stream")
+        elif "launcher up" in launcher_new:
+            self.failure = f"the launcher restarted during the stream after {ran:.1f} s"
+        elif "-> LOST" in launcher_new:
+            lost = [ln for ln in launcher_new.splitlines() if "-> LOST" in ln][-1]
+            self.failure = "the launcher gave up: " + lost.split("INFO", 1)[-1].strip()
+        elif not flag_present:
+            self.failure = f"the stream ended on its own after {ran:.1f} s (moonlight-qt exited)"
+        return self.failure
+
+    def passed(self, now: float) -> bool:
+        return self.failure is None and now - self.started_at >= self.hold
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="couch-streamtest", description="start a stream on the TV and prove it holds")
+    ap.add_argument("--app", default="Desktop", help="Sunshine app name (must be in moonlight-qt list); default Desktop")
+    ap.add_argument("--hold", type=float, default=60.0, help="seconds the stream must stay up (default 60)")
+    ap.add_argument("--start-timeout", type=float, default=90.0,
+                    help="seconds allowed for wake + connect + first frame (default 90; acceptance: asleep <= 90)")
+    ap.add_argument("--json", action="store_true", help="machine-readable record")
+    a = ap.parse_args(argv)
+    rec: dict = {"app": a.app, "hold_s": a.hold, "result": "ERROR", "events": []}
+    flag = os.path.join(STATE, "streaming")
+    ml_log, la_log = os.path.join(LOGS, "moonlight.log"), os.path.join(LOGS, "launcher.log")
+
+    def ev(msg: str) -> None:
+        rec["events"].append(f"{time.strftime('%H:%M:%S')} {msg}")
+        if not a.json:
+            print(msg, flush=True)
+
+    def finish(result: str, reason: str = "") -> int:
+        rec["result"], rec["reason"] = result, reason
+        if a.json:
+            print(json.dumps(rec, indent=1))
+        else:
+            print(f"{result}: {reason}" if reason else result)
+        return {"PASS": 0, "FAIL": 1}.get(result, 2)
+
+    def evidence(t0: float, ml_off: int) -> None:
+        rec["kiosk_after"] = kiosk_show()
+        rec["moonlight_tail"] = tail(read_from(ml_log, ml_off))
+        rec["journal"] = journal_since(t0)
+
+    t0 = time.time()
+    try:
+        code, st = http("GET", "/status", timeout=5)
+    except OSError as exc:
+        return finish("ERROR", f"couch-daemon not reachable on 127.0.0.1:{PORT}: {exc}")
+    if code != 200:
+        return finish("ERROR", f"GET /status -> {code}")
+    base = kiosk_show()
+    if base.get("ActiveState") != "active":
+        return finish("ERROR", f"{UNIT} is {base.get('ActiveState', 'unknown')}, not active")
+    if os.path.exists(flag):
+        return finish("ERROR", "a stream is already running (/var/lib/couch/streaming) - quit it first")
+    ml_off, la_off = size(ml_log), size(la_log)
+    rec["kiosk_before"] = base
+    ev(f"host {st.get('host')} ({st.get('ip')}) sunshine={st.get('sunshine')}; kiosk pid {base.get('MainPID')} "
+       f"restarts {base.get('NRestarts')}")
+
+    code, body = http("POST", "/stream", {"app": a.app, "launch": True})
+    if code != 200:
+        return finish("ERROR", f"POST /stream -> {code}: {body.get('error')} (apps: {body.get('apps')}, "
+                               f"list_error: {body.get('list_error')})")
+    ev(f"asked the launcher to start {a.app!r}: {' '.join(str(x) for x in body.get('argv', []))[:200]}")
+
+    # Phase 1: wait for the moonlight child (the launcher's streaming flag), watching for an early death.
+    started_at = None
+    deadline = time.time() + a.start_timeout
+    while time.time() < deadline:
+        time.sleep(1.0)
+        now = time.time()
+        show = kiosk_show()
+        new = read_from(la_log, la_off)
+        if show.get("MainPID") != base.get("MainPID") or show.get("NRestarts") != base.get("NRestarts") \
+                or "launcher up" in new:
+            evidence(t0, ml_off)
+            return finish("FAIL", f"kiosk restarted {now - t0:.1f} s after the launch request, at or before the first "
+                                  f"frame (the compositor / X-server crash class). moonlight tail: "
+                                  f"{' | '.join(rec['moonlight_tail'][-3:])}")
+        if "-> LOST" in new:
+            evidence(t0, ml_off)
+            lost = [ln for ln in new.splitlines() if "-> LOST" in ln][-1]
+            return finish("FAIL", "the launcher gave up before streaming: " + lost.split("INFO", 1)[-1].strip())
+        if os.path.exists(flag) or "-> STREAMING" in new:
+            started_at = now
+            ev(f"stream child started {now - t0:.1f} s after the request; holding {a.hold:.0f} s")
+            break
+    if started_at is None:
+        evidence(t0, ml_off)
+        return finish("FAIL", f"no stream started within {a.start_timeout:.0f} s (launcher log: "
+                              f"{' | '.join(tail(read_from(la_log, la_off), 3))})")
+
+    # Phase 2: hold.
+    w = Watch(base, a.hold, started_at)
+    while not w.passed(time.time()):
+        time.sleep(1.0)
+        fail = w.step(time.time(), kiosk_show(), os.path.exists(flag), read_from(la_log, la_off))
+        if fail:
+            evidence(t0, ml_off)
+            return finish("FAIL", fail + ". moonlight tail: " + " | ".join(rec["moonlight_tail"][-3:]))
+    held = time.time() - started_at
+    ev(f"held {held:.0f} s: kiosk pid stable, stream child alive, launcher quiet")
+
+    # Phase 3: quit and confirm the return to the launcher.
+    http("POST", "/quit")
+    q0 = time.time()
+    back = False
+    while time.time() - q0 < 15:
+        time.sleep(0.5)
+        new = read_from(la_log, la_off)
+        if not os.path.exists(flag) and ("STREAMING -> IDLE" in new or "STREAMING -> LOST" in new):
+            back = True
+            break
+    rec["quit_s"] = round(time.time() - q0, 1)
+    evidence(t0, ml_off)
+    rec["moonlight_left_running"] = moonlight_running()
+    if not back:
+        return finish("FAIL", f"after /quit the launcher did not return to IDLE within 15 s (held {held:.0f} s first)")
+    if rec["kiosk_after"].get("MainPID") != base.get("MainPID"):
+        return finish("FAIL", "the kiosk restarted when the stream was quit")
+    if rec["moonlight_left_running"]:
+        return finish("FAIL", f"a moonlight-qt process is still running {rec['quit_s']} s after /quit")
+    return finish("PASS", f"{a.app!r} streamed for {held:.0f} s on kiosk pid {base.get('MainPID')} (0 restarts), "
+                          f"quit returned to the launcher in {rec['quit_s']} s, no moonlight-qt left")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,7 +1,7 @@
 """The Couch launcher: ties config, state machine, input mapping, renderer and backend together.
 
 `App` is drivable without a real display (tests feed it actions and a fake backend and read back `View`s);
-`main()` runs the pygame loop full-screen under cage."""
+`main()` runs the pygame loop full-screen on the kiosk's X server."""
 from __future__ import annotations
 
 import json
@@ -325,12 +325,19 @@ def main(config_path: str = DEFAULT_PATH) -> int:
     import pygame
     from pygame._sdl2 import controller
 
-    from .backend import LocalBackend
+    from .backend import LocalBackend, finalize_crashed_stream
     from .sounds import Sounds
 
-    # Under cage the Wayland backend is preferred; XWayland (x11) is the fallback if SDL cannot use Wayland.
+    crashed = finalize_crashed_stream()
+    if crashed:
+        log.warning("the previous launcher died while streaming %r after %.1f s (recorded as %s); moonlight said: %s",
+                    crashed["app"], crashed["duration_s"], crashed["outcome"], " | ".join(crashed["moonlight_tail"][-3:]))
+    # The kiosk is a bare X server (couch-kiosk.service), so x11 first whenever a DISPLAY exists; the Wayland driver
+    # stays as the alternative for a Wayland kiosk.
     wanted = os.environ.get("SDL_VIDEODRIVER")
-    for drv in ([wanted] if wanted else []) + ["wayland", "x11"]:
+    order = ["x11", "wayland"] if os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY") else \
+        ["wayland", "x11"]
+    for drv in ([wanted] if wanted else []) + order:
         os.environ["SDL_VIDEODRIVER"] = drv
         try:
             pygame.display.init()

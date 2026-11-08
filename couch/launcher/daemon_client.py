@@ -1,6 +1,6 @@
 """DaemonBackend: the launcher's backend when couch-daemon is running (P3). The daemon is the allow-list gate (WoL
 only to the configured MAC, stream only for listed apps, host discovery by name/ARP/cache); the launcher still runs
-the moonlight-qt child itself so it stays inside the cage session."""
+the moonlight-qt child itself so it stays inside the kiosk's X session."""
 from __future__ import annotations
 
 import http.client
@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 
-from .backend import Child, LocalBackend
+from .backend import LocalBackend
 from .config import Config
 
 DAEMON_PORT = int(os.environ.get("COUCH_DAEMON_PORT", "7777"))
@@ -100,7 +100,7 @@ class DaemonBackend(LocalBackend):
             self._refused = True
             return
         self._refused = False
-        self.stream = Child([str(a) for a in body["argv"]], "moonlight.log")
+        self.stream = self.spawn_stream([str(a) for a in body["argv"]])
         self._flag(True)
 
     def stream_status(self) -> tuple[str, int | None]:

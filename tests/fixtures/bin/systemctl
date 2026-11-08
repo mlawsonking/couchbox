@@ -1,9 +1,13 @@
 #!/bin/sh
-# fake systemctl for tests: $COUCH_SYSROOT/systemctl.state = "<is-active> <is-enabled> <getty-state>"
-read -r active enabled getty <"$COUCH_SYSROOT/systemctl.state"
+# fake systemctl for tests: $COUCH_SYSROOT/systemctl.state = "<is-active> <is-enabled> <getty-state> [<kiosk-restarts>]"
+read -r active enabled getty restarts <"$COUCH_SYSROOT/systemctl.state"
 case "$1 $2" in
   "is-active "*) echo "$active"; [ "$active" = active ] ;;
   "is-enabled getty@tty1.service") echo "$getty" ;;
   "is-enabled "*) echo "$enabled"; [ "$enabled" = enabled ] ;;
+  "show -p") case "$*" in
+               *--value*) echo "${restarts:-0}" ;;
+               *) echo "MainPID=4242"; echo "NRestarts=${restarts:-0}"; echo "ActiveState=$active" ;;
+             esac ;;
   *) echo "fake systemctl: unsupported $*" >&2; exit 1 ;;
 esac

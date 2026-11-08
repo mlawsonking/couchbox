@@ -32,6 +32,8 @@ Date: ________  NUC model: ________  TV: ________  Workstation: ________
 2. On the TV pick **Steam Big Picture**. TV shows "Waking up the game PC" with seconds counting.
 3. Big Picture appears on the TV. Time from the press: ____ s (must be <= 90).
 4. Quit to the launcher (item 5), pick **Steam Big Picture** again: ____ s (must be <= 10).
+5. **[SSH]** `/opt/couch/bin/couch-streamtest --hold 60` prints PASS (the stream held 60 s with the kiosk's PID
+   unchanged and quit cleanly). A FAIL "kiosk restarted during the stream" is the compositor/X-server crash class.
 
 [ ] PASS  [ ] FAIL  notes: __________________
 

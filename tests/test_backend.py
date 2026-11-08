@@ -63,7 +63,7 @@ def test_stream_argv_and_clean_exit(env, monkeypatch):
     b.start_stream("Steam Big Picture")
     assert wait_exit(b) == ("exited", 0)
     line = argv_log.read_text().strip()
-    assert line.startswith("stream gamepc.local Steam Big Picture --quit-after --display-mode fullscreen")
+    assert line.startswith("stream gamepc.local Steam Big Picture --quit-after --display-mode borderless")
     assert "--resolution 1920x1080 --fps 60 --bitrate 15000" in line and "--video-codec HEVC" in line
     hist = [json.loads(x) for x in (tmp / "streams.jsonl").read_text().splitlines()]
     assert hist[-1]["app"] == "Steam Big Picture" and hist[-1]["exit_code"] == 0

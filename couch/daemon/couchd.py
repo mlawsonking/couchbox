@@ -25,6 +25,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -63,12 +64,19 @@ def is_loopback(addr: str) -> bool:
     return ip.is_loopback
 
 
+# Lines moonlight-qt (Qt, libEGL, libva, SDL) prints on stderr around the app list; the daemon's runner merges
+# stderr into the output, so these have been counted as apps ("libEGL warning: DRI3 error..." on the NUC).
+NOISE = re.compile(r"^(libegl|libva|mesa|\(ee\)|\(ww\)|warning:|error:|qt\.|\d\d:\d\d:\d\d - |.*\bqt (warning|info|"
+                   r"debug|critical|fatal)\b|.*qstandardpaths|.*request failed with error|moonlight)", re.I)
+
+
 def parse_list(output: str) -> list[str]:
-    """App names from `moonlight-qt list <host>`: one per line; tolerate a CSV form (first column) and headers."""
+    """App names from `moonlight-qt list <host>`: one per line; tolerate a CSV form (first column) and headers; drop
+    the library warnings that come through stderr."""
     apps = []
     for line in output.splitlines():
         line = line.strip()
-        if not line or line.lower().startswith(("name,", "error", "warning", "qt.", "moonlight")):
+        if not line or line.lower().startswith("name,") or NOISE.match(line):
             continue
         if "," in line and line.count(",") >= 2:
             line = line.split(",")[0].strip().strip('"')

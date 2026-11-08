@@ -31,6 +31,8 @@ except ImportError:  # pragma: no cover - Ubuntu 24.04 ships Python 3.12
 VERSION = "1"
 GREEN, YELLOW, RED, SKIP = "green", "yellow", "red", "skip"
 _RANK = {SKIP: 0, GREEN: 0, YELLOW: 1, RED: 2}
+KIOSK_RESTARTS_WARN = 3          # couch-kiosk.service NRestarts since boot that turns the services line yellow
+QUICK_DEATH_S = 5.0              # a stream that ended non-zero within this many seconds counts as a crash
 
 # Xbox Wireless Adapter USB product ids (vendor 045e) handled by xone.
 DONGLE_PIDS = {"02e6", "02fe", "02f9", "091e"}
@@ -51,14 +53,30 @@ def read(path: str, default: str = "") -> str:
         return default
 
 
-def run(argv: list[str], timeout: float = 10.0) -> tuple[int, str]:
+def run_split(argv: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
+    """(rc, stdout, stderr) - for commands whose stdout is data (moonlight-qt list) and stderr is library chatter."""
     try:
         cp = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
-        return cp.returncode, (cp.stdout or "") + (cp.stderr or "")
+        return cp.returncode, cp.stdout or "", cp.stderr or ""
     except FileNotFoundError:
-        return 127, f"{argv[0]}: not installed"
+        return 127, "", f"{argv[0]}: not installed"
     except subprocess.TimeoutExpired:
-        return 124, f"{argv[0]}: timed out after {timeout:.0f}s"
+        return 124, "", f"{argv[0]}: timed out after {timeout:.0f}s"
+
+
+def run(argv: list[str], timeout: float = 10.0) -> tuple[int, str]:
+    rc, out, err = run_split(argv, timeout)
+    return rc, out + err
+
+
+# Lines moonlight-qt (Qt, libEGL, libva, SDL) prints around an app list; they are not apps (same rule as the daemon).
+NOISE = re.compile(r"^(libegl|libva|mesa|\(ee\)|\(ww\)|warning:|error:|qt\.|\d\d:\d\d:\d\d - |.*\bqt (warning|info|"
+                   r"debug|critical|fatal)\b|.*qstandardpaths|.*request failed with error|moonlight)", re.I)
+
+
+def app_lines(stdout: str) -> list[str]:
+    return [x.strip() for x in stdout.splitlines() if x.strip() and not NOISE.match(x.strip())
+            and not x.strip().lower().startswith("name,")]
 
 
 def result(name: str, status: str, summary: str, detail: dict | None = None) -> dict:
@@ -300,8 +318,22 @@ def check_services() -> dict:
     detail["firstboot_pending"] = pending
     if pending:
         bad.append("first-boot install not finished")
+    # Restarts since boot: the kiosk dying under a stream (compositor / X server crash) shows here even when nothing
+    # else was recorded - systemd brings it back in 2 s and the TV just shows the tiles again.
+    _, nres = run(["systemctl", "show", "-p", "NRestarts", "--value", "couch-kiosk.service"])
+    try:
+        restarts = int(nres.strip() or 0)
+    except ValueError:
+        restarts = 0
+    detail["couch-kiosk.service"]["restarts_since_boot"] = restarts
+    warn = []
+    if restarts >= KIOSK_RESTARTS_WARN:
+        warn.append(f"kiosk restarted {restarts} times since boot (crashing under streams? see the streams line and "
+                    f"journalctl -b -u couch-kiosk)")
     if bad:
-        return result("services", RED, "; ".join(bad), detail)
+        return result("services", RED, "; ".join(bad + warn), detail)
+    if warn:
+        return result("services", YELLOW, "; ".join(warn), detail)
     return result("services", GREEN, "kiosk running, tty1 login masked", detail)
 
 
@@ -391,8 +423,17 @@ def check_network(measure: bool = False) -> dict:
     rc, out = run(["ping", "-n", "-c", "20", "-i", "0.2", "-W", "1", ip], timeout=15)
     pg = parse_ping(out)
     detail["ping"] = pg
+    icmp_blocked = False
     if pg["received"] == 0:
-        return result("network", YELLOW, f"{host} ({ip}) does not answer ping - asleep?", detail)
+        # Windows' firewall drops ICMP echo by default: a PC that is awake with Sunshine listening answers on TCP
+        # and never on ping. Only "no ping AND no TCP" means asleep.
+        ports = sunshine_ports(ip)
+        detail["tcp"] = ports
+        if not any(v == "open" for v in ports.values()):
+            return result("network", YELLOW, f"{host} ({ip}) does not answer ping or TCP 47989/47984 - asleep?",
+                          detail)
+        icmp_blocked = True
+        detail["icmp"] = "blocked (host answers on TCP; jitter and loss not measurable by ping)"
     if measure:
         rc, out = run(["iperf3", "-c", ip, "-t", "10", "-J", "-R"], timeout=25)
         try:
@@ -408,30 +449,33 @@ def check_network(measure: bool = False) -> dict:
                 detail["throughput_mbps"] = json.load(fh).get("throughput_mbps")
         except (OSError, ValueError):
             detail["throughput_mbps"] = None
-    link_bad = (pg["jitter_ms"] or 0) > JITTER_BAD_MS or pg["loss_pct"] > LOSS_BAD_PCT
+    jitter, loss = (None, None) if icmp_blocked else (pg["jitter_ms"], pg["loss_pct"])
+    link_bad = (jitter or 0) > JITTER_BAD_MS or (loss or 0) > LOSS_BAD_PCT
     _, vout = run(["vainfo", "--display", "drm"])
     ceiling = parse_vainfo(vout)["decode_ceiling"]
     detail["decode_ceiling"] = ceiling
-    rung = recommend_rung(detail["throughput_mbps"], pg["jitter_ms"], pg["loss_pct"], ceiling)
+    rung = recommend_rung(detail["throughput_mbps"], jitter, loss, ceiling)
     detail.update(link_bad=link_bad, rung=rung, path=",".join(sorted({i["kind"] for i in up})))
     if measure and detail.get("throughput_mbps") is not None:
         try:
             with open(p(STATE + "/link.json"), "w", encoding="utf-8") as fh:
                 json.dump({"rung": rung, "throughput_mbps": detail["throughput_mbps"],
-                           "jitter_ms": pg["jitter_ms"], "loss_pct": pg["loss_pct"], "at": time.time()}, fh)
+                           "jitter_ms": jitter, "loss_pct": loss, "at": time.time()}, fh)
         except OSError:
             pass
     tput = f", {detail['throughput_mbps']} Mbps" if detail.get("throughput_mbps") else ""
-    summary = (f"{detail['path']} path to {host}: jitter {pg['jitter_ms']} ms, loss {pg['loss_pct']}%, "
-               f"rtt {pg['rtt_avg_ms']} ms{tput}; quality {rung}")
+    if icmp_blocked:
+        summary = (f"{detail['path']} path to {host}: answers on TCP, ICMP blocked by the PC's firewall "
+                   f"(no ping jitter/loss){tput}; quality {rung}")
+    else:
+        summary = (f"{detail['path']} path to {host}: jitter {pg['jitter_ms']} ms, loss {pg['loss_pct']}%, "
+                   f"rtt {pg['rtt_avg_ms']} ms{tput}; quality {rung}")
     return result("network", YELLOW if link_bad else GREEN, summary + (" - link is shaky" if link_bad else ""),
                   detail)
 
 
-def check_sunshine() -> dict:
-    host, ip, _ = workstation()
-    if not ip:
-        return result("sunshine", YELLOW, f"{host} not found; Sunshine not checked", {})
+def sunshine_ports(ip: str) -> dict:
+    """TCP state of Sunshine's HTTP (47989) and HTTPS (47984) ports: open | refused | timeout."""
     states = {}
     for port in (47989, 47984):
         try:
@@ -441,6 +485,14 @@ def check_sunshine() -> dict:
             states[port] = "refused"
         except OSError:
             states[port] = "timeout"
+    return states
+
+
+def check_sunshine() -> dict:
+    host, ip, _ = workstation()
+    if not ip:
+        return result("sunshine", YELLOW, f"{host} not found; Sunshine not checked", {})
+    states = sunshine_ports(ip)
     if all(v == "open" for v in states.values()):
         return result("sunshine", GREEN, f"Sunshine answering on {ip}:47989/47984", {"ports": states})
     if any(v == "refused" for v in states.values()):
@@ -452,10 +504,11 @@ def check_pairing() -> dict:
     host, ip, _ = workstation()
     if not ip:
         return result("pairing", SKIP, "workstation not reachable; pairing not checked", {})
-    rc, out = run([MOONLIGHT, "list", host], timeout=30)
+    rc, stdout, stderr = run_split([MOONLIGHT, "list", host], timeout=30)
+    out = stdout + stderr
     low = out.lower()
     if rc == 0:
-        apps = [x.strip() for x in out.splitlines() if x.strip()]
+        apps = app_lines(stdout)          # stdout only: libEGL/Qt warnings on stderr are not apps
         return result("pairing", GREEN, f"paired with {host} ({len(apps)} apps)", {"apps": apps[:50]})
     if "pair" in low:
         return result("pairing", RED, f"not paired with {host}: use Menu > Pair on the TV", {"output": out[-300:]})
@@ -501,9 +554,29 @@ def check_streams() -> dict:
             continue
     if not streams:
         return result("streams", SKIP, "no streams yet", {"last": []})
-    desc = "; ".join(f"{s.get('app')} {s.get('duration_s')}s exit {s.get('exit_code')}" for s in reversed(streams))
-    failed = sum(1 for s in streams if s.get("exit_code") not in (0, None))
-    return result("streams", YELLOW if failed >= 2 else GREEN, desc, {"last": streams})
+
+    def crashed(s: dict) -> bool:
+        # The launcher died under the stream (recorded by the next launcher start), or moonlight-qt died non-zero
+        # within seconds of starting: both are "the stream never really happened".
+        return s.get("outcome") == "kiosk-crash" or (s.get("exit_code") not in (0, None) and
+                                                      (s.get("duration_s") or 0) < QUICK_DEATH_S)
+
+    def one(s: dict) -> str:
+        tag = " KIOSK CRASHED" if s.get("outcome") == "kiosk-crash" else ""
+        return f"{s.get('app')} {s.get('duration_s')}s exit {s.get('exit_code')}{tag}"
+
+    desc = "; ".join(one(s) for s in reversed(streams))
+    detail = {"last": streams}
+    last = streams[-1]
+    if crashed(last):
+        detail["moonlight_tail"] = last.get("moonlight_tail", [])
+        how = ("the kiosk died with it (compositor / X server crash: journalctl -b -u couch-kiosk, "
+               "/var/log/couch/moonlight.log)" if last.get("outcome") == "kiosk-crash"
+               else f"moonlight-qt exited {last.get('exit_code')} (see /var/log/couch/moonlight.log)")
+        return result("streams", RED, f"last stream of {last.get('app')!r} died after {last.get('duration_s')} s - "
+                                      f"{how}; earlier: {desc}", detail)
+    failed = sum(1 for s in streams if s.get("exit_code") not in (0, None) or crashed(s))
+    return result("streams", YELLOW if failed >= 2 else GREEN, desc, detail)
 
 
 MEASURE = False

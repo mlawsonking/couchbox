@@ -2,6 +2,7 @@
 # Fake moonlight-qt CLI for tests: records argv (one line per call) to $MOONLIGHT_ARGV_LOG and behaves per
 # $FAKE_MOONLIGHT_MODE: ok (exit 0) | fail (exit 1) | hang (until killed) | notpaired (exit 1 + message) |
 # slow (exit 0 after 1 s) | list (prints $FAKE_MOONLIGHT_APPS: newline-separated app names).
+# `list` also prints the stderr chatter the real AppImage emits on the NUC (libEGL, Qt), which must never count as apps.
 [ -n "${MOONLIGHT_ARGV_LOG:-}" ] && printf '%s\n' "$*" >>"$MOONLIGHT_ARGV_LOG"
 mode="${FAKE_MOONLIGHT_MODE:-ok}"
 # `list` can be given its own behaviour (FAKE_LIST_MODE) so a test can hang the stream but still list apps.
@@ -11,6 +12,11 @@ case "$mode" in
     hang) trap '' TERM; while :; do sleep 1; done ;;
     notpaired) echo "Error: Computer is not paired" >&2; exit 1 ;;
     slow) sleep 1; exit 0 ;;
-    list) printf "%s\n" "${FAKE_MOONLIGHT_APPS:-Desktop}"; exit 0 ;;
+    list)
+        echo "libEGL warning: DRI3 error: Could not get DRI3 device" >&2
+        echo "libEGL warning: Ensure your X server supports DRI3 to get accelerated rendering" >&2
+        echo "00:00:00 - Qt Warning: QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-couch'" >&2
+        echo '"applist" request failed with error: QNetworkReply::OperationCanceledError' >&2
+        printf "%s\n" "${FAKE_MOONLIGHT_APPS:-Desktop}"; exit 0 ;;
     *) exit 0 ;;
 esac
