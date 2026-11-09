@@ -35,6 +35,7 @@ SCREENS = (HOME, WAKING, CONNECTING, STREAMING, LOST, PAIR, MENU, MAPPING, PIN)
 class TileView:
     name: str
     art: str = ""
+    badge: str = ""              # "Resume": a session this box started is still running on the game PC
 
 
 @dataclass
@@ -65,7 +66,7 @@ class View:
 
     def key(self) -> tuple:
         """Everything that changes the static layer (NOT focus, t, elapsed: those are animated regions)."""
-        return (self.screen, tuple((x.name, x.art) for x in self.tiles), self.cols, self.app, self.host_state,
+        return (self.screen, tuple((x.name, x.art, x.badge) for x in self.tiles), self.cols, self.app, self.host_state,
                 self.pads, self.link_bad, self.health, self.kid, self.parent, self.pin, tuple(self.menu_items),
                 self.notice, round(self.dim, 2), self.prompt, self.progress, self.pad_name,
                 tuple(self.pin_digits), self.pin_cursor)
@@ -237,6 +238,12 @@ class Renderer:
             for tile, r in zip(v.tiles, rects):
                 rr = r.move(0, -off)
                 base.blit(self.art(tile, rr.size), rr)
+                if tile.badge:
+                    t = self.text(tile.badge, 34, BG)
+                    pill = t.get_rect().inflate(self.px(36), self.px(18))
+                    pill.topleft = (rr.x + self.px(12), rr.y + self.px(12))
+                    pygame.draw.rect(base, INFO, pill, border_radius=pill.height // 2)
+                    base.blit(t, t.get_rect(center=pill.center))
                 label = self.text(tile.name if len(tile.name) <= 28 else tile.name[:25] + "...", 36, TEXT)
                 base.blit(label, label.get_rect(midtop=(rr.centerx, rr.bottom + self.px(14))))
             base.set_clip(None)

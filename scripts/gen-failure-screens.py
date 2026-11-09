@@ -13,8 +13,10 @@ WHEN = {
     "SUNSHINE_TIMEOUT": ("the PC answers but Sunshine's port 47989 stays closed for 60 s",
                          "Sunshine service stopped/crashed; firewall rule missing; Sunshine still starting after a Windows update",
                          "On the PC: `Check-Sunshine.ps1`; restart SunshineService; `Setup-Sunshine.ps1 -Apply` re-adds missing rules."),
-    "STREAM_FAILED": ("moonlight-qt exited with an error 3 times in a row within 15 s of starting",
-                      "the app name in couch.toml no longer exists in Sunshine; the game crashes on launch; decoder/display mode not supported",
+    "STREAM_FAILED": ("moonlight-qt exited with an error, or logged a fatal connection message (\"No video received from "
+                      "host\", \"Connection terminated\", ...) in the first 25 s, 3 times in a row; each failed attempt is stopped "
+                      "(its Sunshine session ended too) and retried after 2 s. The line shown is the real reason",
+                      "the app name in couch.toml no longer exists in Sunshine; the game crashes on launch; decoder/display mode not supported; the PC's video capture did not start (no UDP video from the host: firewall / ports 47998, 48000)",
                       "`journalctl -u couch-kiosk`, `/var/log/couch/moonlight.log`; try the Desktop tile; lower `[stream]` to `1080p60`."),
     "STREAM_LOST": ("a stream that ran > 15 s ended with an error",
                     "the PC went to sleep or rebooted; Wi-Fi/mesh drop between garage and living room; PC network unplugged",
@@ -46,7 +48,8 @@ def render() -> str:
         example = parent.format(host="gamepc.local", mac="AA:BB:CC:DD:EE:FF", app="Celeste", strikes=3, code=1,
                                 secs=120 if code == "WAKE_TIMEOUT" else (60 if code == "SUNSHINE_TIMEOUT" else
                                                                          (30 if code == "HOST_GONE" else 180)),
-                                detail="(moonlight-qt's last error line)")
+                                detail=("No video received from host. Check your firewall and port forwarding rules for port(s): UDP 47998, "
+                                        "UDP 48000" if code == "STREAM_FAILED" else "(moonlight-qt's last error line)"))
         out += [f"## {code}", "", f"- **TV says:** {kid}", f"- **For grown-ups (example):** {example}", f"- **When:** {when}",
                 f"- **Usual causes:** {causes}", f"- **Fix:** {fix}", ""]
     return "\n".join(out)

@@ -99,6 +99,20 @@ Date: ________  NUC model: ________  TV: ________  Workstation: ________
 
 [ ] PASS  [ ] FAIL  notes: __________________
 
+## Extra: failed start and stranded session (2026-11-09; try once after any change to either)
+
+1. **Failed start:** with the PC awake, block UDP 47998/48000 from the NUC (or stop Sunshine's video capture) and press a
+   tile. Within ~25 s the launcher stops the stuck moonlight-qt (no error dialog stays on the TV), retries after 2 s, and
+   on the third try shows "The game would not start." with the real reason ("No video received from host ..."). Undo the
+   block: the next press streams. **[SSH]** the last three `streams.jsonl` lines have `"failure"` and exit_code 0;
+   Sunshine shows no running app afterwards (`curl http://<pc>:47989/serverinfo | grep currentgame` = 0).
+   [ ] PASS  [ ] FAIL
+2. **Stranded session:** start a game, then `sudo systemctl restart couch-kiosk` mid-stream (the game keeps running on
+   the PC). When the tiles are back, that game's tile has a blue **Resume** badge within ~10 s. Press it: the stream
+   resumes like a normal start. Repeat without pressing anything: after `[stream] resume_window_min` (15) minutes the
+   badge disappears, `streams.jsonl` gets `"outcome": "stranded-ended"` (app, age_s, sunshine_quit) and Sunshine
+   shows no running app. A game started from a phone's Moonlight is never badged or ended. [ ] PASS  [ ] FAIL
+
 ## Extra (not acceptance, worth trying once)
 
 - Leave HOME untouched 10 min: screen dims; 60 min: goes black; any button wakes it without launching anything.

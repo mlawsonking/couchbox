@@ -25,6 +25,10 @@ SUNSHINE_TIMEOUT = 60.0
 LAUNCH_GRACE = 15.0          # a moonlight exit != 0 within this window counts as a failed launch (strike)
 MAX_STRIKES = 3
 RETRY_PAUSE = 2.0            # between failed launches
+FAIL_WATCH = 25.0            # seconds after the child starts in which moonlight.log is watched for fatal connection
+                             # messages (the "no video" timeout fires ~17 s in); never matched after that - an
+                             # established stream logs RFI/invalidate-frame lines all the time, and they are normal
+WATCH_EVERY = 0.5            # how often the log is looked at inside that window
 HOST_GONE_GRACE = 30.0       # host unreachable this long while streaming -> stop + LOST (moonlight hung)
 PAIR_TIMEOUT = 180.0
 # stop_stream's bound is backend.STOP_BOUND (SIGTERM grace + SIGKILL + reap + Sunshine quit); a normal quit ~3-4 s.
@@ -38,7 +42,7 @@ REASONS = {
                          "{host} answers but Sunshine did not respond within {secs:.0f}s. Is the Sunshine service "
                          "running on the PC?"),
     "STREAM_FAILED": ("The game would not start.",
-                      "moonlight-qt failed {strikes} times in a row starting {app!r} (last exit code {code})."),
+                      "moonlight-qt failed {strikes} times in a row starting {app!r}. Last problem: {detail}."),
     "STREAM_LOST": ("We lost the game PC.",
                     "The stream of {app!r} stopped unexpectedly (moonlight-qt exit code {code}). Network or PC "
                     "problem."),
@@ -94,6 +98,7 @@ class Machine:
         self.pin: str | None = None
         self.history: list[tuple[str, str]] = []     # (from, to) for tests / logs
         self.config_error: str | None = None
+        self.last_watch = -1e9
 
     # -------------------------------------------------------------- helpers
     def _go(self, state: str, now: float) -> None:
@@ -197,6 +202,7 @@ class Machine:
         assert self.app is not None
         self.b.start_stream(self.app)
         self.stream_started = now
+        self.last_watch = -1e9
         self.host_down_since = None
         self._go(STREAMING, now)
 
@@ -204,6 +210,15 @@ class Machine:
         st, code = self.b.stream_status()
         ran = now - self.stream_started
         if st == "running":
+            if ran < FAIL_WATCH and now - self.last_watch >= WATCH_EVERY and hasattr(self.b, "stream_failure"):
+                self.last_watch = now
+                why = self.b.stream_failure()
+                if why:
+                    # moonlight-qt keeps running behind an error dialog when the connection fails ("No video received
+                    # from host"): treat it as a failed launch. The normal stop path also ends the Sunshine session.
+                    self.b.stop_stream()
+                    self._launch_failed(now, why)
+                    return
             up = self.b.host_up()
             if up is False:
                 if self.host_down_since is None:
@@ -226,9 +241,13 @@ class Machine:
         if ran >= LAUNCH_GRACE:
             self._fail("STREAM_LOST", now, code=code)
             return
+        self._launch_failed(now, f"exit code {code}", code=code)
+
+    def _launch_failed(self, now: float, detail: str, code: int | None = None) -> None:
+        """A strike: retry after RETRY_PAUSE, or on the MAX_STRIKES-th the STREAM_FAILED screen with the real reason."""
         self.strikes += 1
         if self.strikes >= MAX_STRIKES:
-            self._fail("STREAM_FAILED", now, code=code)
+            self._fail("STREAM_FAILED", now, code=code, detail=detail)
             return
         # Retry after a short pause, back through WAIT_SUNSHINE (which still has its own timeout).
         self._go(WAIT_SUNSHINE, now)

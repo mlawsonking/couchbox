@@ -562,7 +562,7 @@ def check_streams() -> dict:
                                                       (s.get("duration_s") or 0) < QUICK_DEATH_S)
 
     def one(s: dict) -> str:
-        tag = " KIOSK CRASHED" if s.get("outcome") == "kiosk-crash" else ""
+        tag = {"kiosk-crash": " KIOSK CRASHED", "stranded-ended": " (stranded session ended)"}.get(s.get("outcome"), "")
         return f"{s.get('app')} {s.get('duration_s')}s exit {s.get('exit_code')}{tag}"
 
     desc = "; ".join(one(s) for s in reversed(streams))

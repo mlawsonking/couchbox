@@ -126,6 +126,16 @@ section 3.
 
 ## 6. Failure screens
 
+A stream whose connection fails does not return by itself in moonlight-qt (it stays behind an error dialog); the
+launcher reads moonlight's log for the first 25 s of every stream and treats "No video received from host",
+"Connection terminated", "Starting ... failed" and similar as a failed start: it stops the stream (and ends the
+Sunshine session), retries after 2 s, and on the third failure shows the screen below with the real reason.
+
+A game still running on the PC after the launcher or the X server died (a kiosk restart, a crash) shows a blue
+**Resume** badge on its tile for `[stream] resume_window_min` minutes (default 15). Press the tile to resume it. When
+the window passes untouched the box ends it once (`streams.jsonl`: `outcome: stranded-ended`). `0` ends it at once.
+Only a session started by this box is ever offered or ended.
+
 Every failure has a kid line, A = Try again, B = Home, and a small "For grown-ups" line. The full list with causes
 and fixes is `docs/FAILURE-SCREENS.md` (generated from the code). Quick map:
 

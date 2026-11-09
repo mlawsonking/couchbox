@@ -23,9 +23,9 @@ Other signals that are not full screens: the **status strip** on HOME (`Game PC:
 ## STREAM_FAILED
 
 - **TV says:** The game would not start.
-- **For grown-ups (example):** moonlight-qt failed 3 times in a row starting 'Celeste' (last exit code 1).
-- **When:** moonlight-qt exited with an error 3 times in a row within 15 s of starting
-- **Usual causes:** the app name in couch.toml no longer exists in Sunshine; the game crashes on launch; decoder/display mode not supported
+- **For grown-ups (example):** moonlight-qt failed 3 times in a row starting 'Celeste'. Last problem: No video received from host. Check your firewall and port forwarding rules for port(s): UDP 47998, UDP 48000.
+- **When:** moonlight-qt exited with an error, or logged a fatal connection message ("No video received from host", "Connection terminated", ...) in the first 25 s, 3 times in a row; each failed attempt is stopped (its Sunshine session ended too) and retried after 2 s. The line shown is the real reason
+- **Usual causes:** the app name in couch.toml no longer exists in Sunshine; the game crashes on launch; decoder/display mode not supported; the PC's video capture did not start (no UDP video from the host: firewall / ports 47998, 48000)
 - **Fix:** `journalctl -u couch-kiosk`, `/var/log/couch/moonlight.log`; try the Desktop tile; lower `[stream]` to `1080p60`.
 
 ## STREAM_LOST

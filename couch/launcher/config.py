@@ -56,6 +56,7 @@ class Config:
     custom_resolution: str = "1920x1080"
     custom_fps: int = 60
     custom_bitrate_kbps: int = 15000
+    resume_window_min: int = 15      # [stream] resume_window_min: a stranded session is offered for resume this long
     hide_tiles: list[str] = field(default_factory=lambda: list(DEFAULT_HIDE))   # [tiles] hide: never auto-tiled
     kiosk_mode: str = "1920x1080@60"  # [display] kiosk_mode: the X screen's mode ("preferred" = the TV's own, 4K30)
     pair_policy: str = "menu"
@@ -199,6 +200,10 @@ def _load(path: str) -> Config:
     if not 24 <= cfg.custom_fps <= 240:
         problems.append("stream.custom_fps must be 24-240")
         cfg.custom_fps = 60
+    cfg.resume_window_min = get(st, "resume_window_min", int, cfg.resume_window_min)
+    if not 0 <= cfg.resume_window_min <= 240:
+        problems.append("stream.resume_window_min must be 0-240 (minutes; 0 = end a stranded session at once)")
+        cfg.resume_window_min = 15
     cfg.custom_bitrate_kbps = get(st, "custom_bitrate_kbps", int, cfg.custom_bitrate_kbps)
     if not 500 <= cfg.custom_bitrate_kbps <= 150000:
         problems.append("stream.custom_bitrate_kbps must be 500-150000")

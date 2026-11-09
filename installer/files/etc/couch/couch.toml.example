@@ -14,6 +14,9 @@ codec = "HEVC"                 # HEVC | H.264 | AV1 | auto
 custom_resolution = "1920x1080"
 custom_fps = 60
 custom_bitrate_kbps = 15000
+# A game still running on the PC after the launcher died (a kiosk restart, a crash) gets a "Resume" badge on its tile for
+# this many minutes; then the box ends it once. 0 = end it at once. Only sessions this box started are ever touched.
+resume_window_min = 15
 
 [tiles]
 # Every app couch-daemon lists from Sunshine gets a tile automatically: first the [[tile]] blocks below (Desktop and

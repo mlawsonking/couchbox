@@ -212,3 +212,27 @@ PC after a "successful" quit), so a session still there after 3 s is ended with 
 recorded in `streams.jsonl` (`killed`, `sunshine_leftover`, `sunshine_quit`, `sunshine_game_after`). Worst case with every
 stage taking its full time: 7 + 2 + 0.5 s to kill and reap, 3 + 2 s settling on Sunshine, 5 + 2 + 0.5 s for the Sunshine
 quit, 2 s to verify = 24 s (`STOP_BOUND`); a normal quit is the host's ~3-4 s. `couch-streamtest` measures all of it on the real TV (window vs screen, exit code, Sunshine `currentgame`).
+
+## Failed starts and stranded sessions (2026-11-09)
+
+**A connection that fails does not end moonlight-qt.** It prints `Qt Critical: No video received from host.` (about 17 s
+after the start), shows an error dialog and keeps running, so the launcher believed it was streaming. While a stream is
+within `state.FAIL_WATCH` (25 s) the launcher reads moonlight-qt's log from the stream's start offset
+(`launcher/logwatch.py`) every 0.5 s. Fatal messages are specific patterns - `Qt Critical`/`Qt Fatal` lines,
+`SDL Error: Connection terminated`, `Starting ... failed`, "failed/unable to connect", "not reachable", "connection
+timed out" - never "any error line": healthy starts on the NUC log `SDL Error: pl_vk_inst_create() failed` and
+`SDL Critical: libplacebo ...` (Vulkan first, EGL after), every quit logs `Control stream connection failed: 4`, and RFI /
+invalidate-frame lines are normal. After the window nothing is matched. A hit stops the child through the normal stop
+path (which also ends the Sunshine session), counts a strike, retries after `RETRY_PAUSE` and on the third strike shows
+`STREAM_FAILED` with the real message in the grown-ups line.
+
+**A session stranded by a crash** (the launcher or X died under a stream, so no `/cancel` was ever sent) used to run on
+the PC until something resumed it. At launcher start and each time it returns to the tiles, the launcher asks Sunshine
+(`GET /serverinfo`, `<currentgame>`) from a background thread (`launcher/resume.py`). A session seen twice, 5 s apart, that
+this box started (Sunshine's app id equals the id of the app of our last stream; ids are learned from moonlight-qt's own
+`launch?...appid=` log line into `/var/lib/couch/app-ids.json`) gets a **Resume** badge on its tile for
+`[stream] resume_window_min` minutes (15; 0 = end at once). A tile press resumes it as a normal stream. If the window passes
+with the launcher idle, it is ended once with `moonlight-qt quit` and recorded in `streams.jsonl`
+(`outcome: stranded-ended`, `age_s`, `sunshine_quit`, `sunshine_game_after`). Never while a stream is running or
+starting, and never a session this box did not start (a phone's Moonlight, someone at the PC).
+

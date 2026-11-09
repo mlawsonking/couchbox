@@ -14,6 +14,7 @@ from . import render as R
 from . import state as S
 from .config import DEFAULT_PATH, Config, Watcher, load
 from . import gamepads as G
+from .resume import Resume, SessionWatcher
 from .tiles import CLOSE, PAIR, RESTART, SETUP_PAD, Grid, Menu, PinEntry, merge_tiles
 
 ATTRACT_AFTER = 10 * 60.0      # dim the home screen
@@ -33,6 +34,7 @@ class App:
         self.b = backend
         self.m = S.Machine(backend, host=cfg.host, mac=cfg.mac, now=now)
         self.m.config_error = cfg.error
+        self.resume = Resume(window_s=cfg.resume_window_min * 60.0)
         self.daemon_apps: list[str] = []          # what couch-daemon lists from Sunshine (DaemonBackend only)
         self.grid = Grid(list(cfg.tiles))
         self.menu = Menu(pair_allowed=cfg.pair_policy == "menu", pad_setup_allowed=bool(cfg.setup_pin))
@@ -67,6 +69,7 @@ class App:
         if hasattr(self.b, "cfg"):
             self.b.cfg = cfg
         self._rebuild_tiles()
+        self.resume.window_s = cfg.resume_window_min * 60.0
         self.menu.pair_allowed = cfg.pair_policy == "menu"
         self.menu.pad_setup_allowed = bool(cfg.setup_pin)
         self.menu.focus = 0
@@ -89,6 +92,22 @@ class App:
         if changed:
             log.info("tiles: %d (%d apps listed by the daemon)", len(self.grid.tiles), len(self.daemon_apps))
         return changed
+
+    def resume_tick(self, now: float, game: int | None) -> bool:
+        """`game` = Sunshine's current app id as last asked (0/None = no session). A session this box started and lost
+        track of is offered for resume (badge on its tile) for the configured window, then ended once. Never while a
+        stream is running or starting. True when it just ended a session."""
+        if self.m.state not in (S.IDLE, S.LOST):
+            self.resume.reset()                     # our own stream owns whatever Sunshine runs now
+            return False
+        app = self.b.owned_game_app(game) if hasattr(self.b, "owned_game_app") else None
+        self.resume.observe(game if app else None, app, now)
+        if self.resume.due(now, idle=self.m.state == S.IDLE):
+            app, age = self.resume.app or "?", self.resume.age(now)
+            self.resume.mark_ended()
+            self.b.end_stranded(app, age)
+            return True
+        return False
 
     def screen(self) -> str:
         sc = STATE_TO_SCREEN[self.m.state]
@@ -286,7 +305,8 @@ class App:
         f = self.m.failure
         return R.View(
             screen=sc,
-            tiles=[R.TileView(t.name, t.art) for t in self.grid.tiles],
+            tiles=[R.TileView(t.name, t.art, "Resume" if t.app == self.resume.badge(now) else "")
+                   for t in self.grid.tiles],
             cols=self.grid.cols, focus=self.grid.focus, app=self.m.app or "",
             host_state="awake" if host_up else ("asleep" if host_up is False else "unknown"),
             pads=self.pads, link_bad=bool(self.health.get("link_bad")),
@@ -382,6 +402,11 @@ def main(config_path: str = DEFAULT_PATH) -> int:
     mapper = inp.Mapper()
     devices = G.Devices(G.SdlAdapter())
     clock = pygame.time.Clock()
+    sess_watch = None
+    if hasattr(backend, "owned_game_app"):
+        sess_watch = SessionWatcher(backend.sunshine_game, lambda: app.m.state in (S.IDLE, S.LOST))
+        sess_watch.start()                                  # asks Sunshine at once: a session stranded by a crash
+    prev_state = app.m.state
     next_slow = 0.0
     exit_at = time.monotonic() + float(os.environ["COUCH_EXIT_AFTER"]) if os.environ.get("COUCH_EXIT_AFTER") else None
     if hasattr(backend, "apps"):
@@ -410,6 +435,10 @@ def main(config_path: str = DEFAULT_PATH) -> int:
                 log.info("reloaded %d gamepad mapping(s)", devices.reload_mappings(app.mappings_path))
             app.handle(actions, now)
             app.tick(now)
+            if sess_watch is not None:
+                if app.m.state == S.IDLE and prev_state != S.IDLE:
+                    sess_watch.kick()                       # back on the tiles: is anything left running on the PC?
+                prev_state = app.m.state
             if now >= next_slow:
                 next_slow = now + 1.0
                 new = watcher.poll()
@@ -419,12 +448,16 @@ def main(config_path: str = DEFAULT_PATH) -> int:
                 app.refresh_health()
                 if hasattr(backend, "apps"):
                     app.set_daemon_apps(backend.apps())
+                if sess_watch is not None and app.resume_tick(now, sess_watch.game):
+                    sess_watch.kick()
                 if hasattr(backend, "pending"):
                     app.handle_pending(backend.pending(), now)
             dirty = renderer.draw(screen, app.view(now))
             pygame.display.update(dirty)
             clock.tick(10 if app.m.state == S.STREAMING else 30)
     finally:
+        if sess_watch is not None:
+            sess_watch.stop()
         backend.close()
         pygame.quit()
     return 0

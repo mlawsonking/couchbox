@@ -17,6 +17,8 @@ import threading
 import time
 
 from .. import display, net
+from . import logwatch
+from . import resume as resume_mod
 from .config import Config
 
 log = logging.getLogger("couch.launcher.backend")
@@ -216,6 +218,8 @@ class LocalBackend:
     # class-level defaults: DaemonBackend subclasses this with its own __init__
     stream_target = ""                           # the host name moonlight-qt was given (for `quit` after a kill)
     _display_prev: display.Mode | None = None   # what to put the X screen back to when the stream ends
+    _scanner: logwatch.LogScanner | None = None  # moonlight.log from this stream's start (fatal messages, app id)
+    _learned = False
 
     def __init__(self, cfg: Config, prober: Prober | None = None, moonlight: str = MOONLIGHT):
         self.cfg = cfg
@@ -255,6 +259,8 @@ class LocalBackend:
         on the stream's mode first (no window manager: the stream window is only as big as the stream, see
         couch.display) and restored when the stream ends."""
         mark_inflight(self.stream_app)
+        ml_log = os.path.join(LOG_DIR, "moonlight.log")
+        self._scanner, self._learned = logwatch.LogScanner(ml_log, logwatch.size(ml_log)), False
         self.stream_target = argv[argv.index("stream") + 1] if "stream" in argv[:-1] else self.cfg.host
         self._fit_display(argv)
         try:
@@ -292,6 +298,7 @@ class LocalBackend:
         tail = self.stream.tail().lower()
         child, self.stream = self.stream, None
         child.stop()
+        self._learn_app_id()
         record_stream(self.stream_app, child.started, code)
         self._restore_display()
         if code != 0 and any(m in tail for m in NOT_PAIRED_MARKERS):
@@ -308,6 +315,9 @@ class LocalBackend:
         child, self.stream = self.stream, None
         ok = child.stop(TERM_GRACE)
         extra: dict = {}
+        self._learn_app_id()
+        if self._scanner is not None and self._scanner.failure:
+            extra["failure"] = self._scanner.failure              # a failed start: why (see stream_failure)
         target = self.stream_target or self.cfg.host
         if child.killed:
             extra["killed"] = True
@@ -325,6 +335,49 @@ class LocalBackend:
 
     def host_ip(self) -> str | None:
         return getattr(self.prober, "ip", None)
+
+    # -- failed starts and stranded sessions
+    def _learn_app_id(self) -> None:
+        """Sunshine's numeric id for the app being streamed, from moonlight-qt's own launch line: how a later
+        <currentgame> is recognised as one of ours (resume.py)."""
+        sc = self._scanner
+        if sc is None or self._learned:
+            return
+        sc.poll()
+        if sc.app_id and self.stream_app:
+            self._learned = True
+            resume_mod.learn_id(STATE_DIR, sc.app_id, self.stream_app)
+
+    def stream_failure(self) -> str | None:
+        """While a stream is starting: moonlight-qt's fatal connection message from its log, or None. The caller
+        (state.Machine) only asks inside state.FAIL_WATCH."""
+        if self.stream is None or self.stream.poll() is not None or self._scanner is None:
+            return None
+        self._learn_app_id()
+        self._scanner.poll()
+        return self._scanner.failure
+
+    def owned_game_app(self, game: int | None) -> str | None:
+        """Our app name for Sunshine's current app id when the session is one this box started (the id belongs to the
+        app of our last stream), else None: a phone's Moonlight, or anything unknown, is never ours to end."""
+        if not game:
+            return None
+        name = resume_mod.load_ids(STATE_DIR).get(str(game))
+        return name if name and name == resume_mod.last_stream_app(STATE_DIR) else None
+
+    def end_stranded(self, app: str, age_s: float) -> str:
+        """End a stranded session once (`moonlight-qt quit`), verify, and record it in streams.jsonl. Synchronous and
+        bounded (SUNSHINE_QUIT_TIMEOUT + PROBE_TIMEOUT): only called when no stream of ours is running or starting."""
+        target = self.cfg.host
+        result = self.sunshine_quit(target)
+        after = self.sunshine_game()
+        entry = {"app": app, "start": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - age_s)),
+                 "duration_s": round(age_s, 1), "exit_code": None, "outcome": "stranded-ended",
+                 "age_s": round(age_s, 1), "sunshine_quit": result, "sunshine_game_after": after}
+        _append_stream(entry, os.path.join(STATE_DIR, "streams.jsonl"))
+        log.info("ended the stranded Sunshine session of %r (seen %.0f s ago): %s, session after: %s",
+                 app, age_s, result, after)
+        return result
 
     def sunshine_game(self, settle: float = 0.0) -> int | None:
         """Sunshine's <currentgame> (0 = no session) from GET /serverinfo on the game PC, waiting up to `settle`

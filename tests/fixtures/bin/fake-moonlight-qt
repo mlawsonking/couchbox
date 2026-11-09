@@ -17,8 +17,23 @@ if [ "${1:-}" = quit ]; then
 fi
 # `list` can be given its own behaviour (FAKE_LIST_MODE) so a test can hang the stream but still list apps.
 if [ "${1:-}" = list ] && [ -n "${FAKE_LIST_MODE:-}" ]; then mode="$FAKE_LIST_MODE"; fi
+# Every stream logs its launch request first, as the real one does (the app id is how a Sunshine session is recognised).
+if [ "${1:-}" = stream ] && [ -n "${FAKE_APPID:-}" ]; then
+    echo "00:00:01 - Qt Info: Executing request: \"https://10.0.0.9:47984/launch?uniqueid=aa&uuid=bb&appid=$FAKE_APPID&mode=1920x1080x60&sops=1\""
+fi
 case "$mode" in
     fail) echo "fake moonlight: stream failed" >&2; exit 1 ;;
+    connfail)   # a failed connection: the real moonlight-qt prints this, shows an error dialog and keeps running
+        sleep "${FAKE_FAIL_DELAY:-0}"
+        printf '%s\n' "00:00:17 - SDL Error (0): Connection terminated: -100" "00:00:17 - Qt Critical: No video received from host." "" "Check your firewall and port forwarding rules for port(s): UDP 47998, UDP 48000"
+        trap 'exit 0' TERM; while :; do sleep 0.1; done ;;
+    noisy)      # what HEALTHY starts log on the NUC: error-level lines that are not failures, then a running stream
+        printf '%s\n' "00:00:01 - SDL Error (0): pl_vk_inst_create() failed" \
+            "00:00:01 - SDL Critical (0): libplacebo: Failed initializing vulkan instance" \
+            "00:00:01 - SDL Warn (0): Failed to create test window with platform flags: Installed Vulkan doesn't implement the VK_KHR_surface extension" \
+            "00:00:07 - SDL Info (0): Sending RFI request for unrecoverable frame 23252" \
+            "00:00:07 - SDL Info (0): Control stream connection failed: 4"
+        trap 'exit 0' TERM; while :; do sleep 0.1; done ;;
     graceful) trap 'sleep "${FAKE_TERM_DELAY:-0.5}"; exit 0' TERM; while :; do sleep 0.1; done ;;
     hang) trap '' TERM; while :; do sleep 1; done ;;
     notpaired) echo "Error: Computer is not paired" >&2; exit 1 ;;

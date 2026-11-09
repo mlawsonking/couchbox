@@ -12,6 +12,8 @@ def sample_views() -> dict[str, R.View]:
     kid, parent = REASONS["STREAM_LOST"]
     return {
         "home": R.View(R.HOME, tiles=tiles, focus=1, host_state="asleep", pads=1, link_bad=True),
+        "home-resume": R.View(R.HOME, tiles=[R.TileView(n, "", "Resume" if n == SAMPLE_TILES[1] else "")
+                                             for n in SAMPLE_TILES], focus=1, host_state="awake", pads=1),
         "home-scrolled": R.View(R.HOME, tiles=tiles, focus=5, host_state="awake", pads=2, health="red"),
         "waking": R.View(R.WAKING, elapsed=12, t=0.25),
         "connecting": R.View(R.CONNECTING, app="Celeste", elapsed=3, t=0.5),
