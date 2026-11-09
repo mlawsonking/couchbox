@@ -41,6 +41,14 @@ def test_launcher_restart_and_lost_and_early_end():
     assert "ended on its own after 7.0 s" in w.step(7.0, dict(BASE), False, "")
 
 
+def test_main_without_a_daemon_is_a_clean_error_not_a_traceback(monkeypatch, capsys):
+    """2026-11-09: the first real run crashed in the very first call (a helper named `http` shadowed the module)."""
+    monkeypatch.setattr(ST, "PORT", 1)                     # nothing listens on loopback:1
+    rc = ST.main(["--hold", "1", "--json"])
+    out = capsys.readouterr().out
+    assert rc == 2 and '"result": "ERROR"' in out and "not reachable" in out
+
+
 def test_help_runs_without_a_daemon():
     cp = subprocess.run([sys.executable, os.path.join(REPO, "couch", "bin", "couch-streamtest"), "--help"],
                         capture_output=True, text=True)

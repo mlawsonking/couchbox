@@ -77,6 +77,15 @@ def test_streams_long_clean_stream_after_a_crash_is_fine(doctor):
     assert c["status"] == "green" and c["summary"].startswith("Desktop 75.0s exit 0")
 
 
+def test_streams_force_quit_after_a_real_session_is_not_a_failure(doctor):
+    """2026-11-09 NUC: a /quit stops moonlight-qt with SIGTERM then SIGKILL (exit -9) after a 65 s stream."""
+    d = doctor("good")
+    write_streams(d, [{"app": "Desktop", "duration_s": 65.1, "exit_code": -9},
+                      {"app": "Desktop", "duration_s": 61.0, "exit_code": -15}])
+    c = by_name(d.run_all())["streams"]
+    assert c["status"] == "green", c
+
+
 def test_services_warn_on_kiosk_restart_storm(doctor):
     d = doctor("good")
     with open(os.path.join(d.SYSROOT, "systemctl.state"), "w") as fh:

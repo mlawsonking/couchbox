@@ -31,7 +31,9 @@ LOGS = os.environ.get("COUCH_LOG_DIR", "/var/log/couch")
 UNIT = "couch-kiosk.service"
 
 
-def http(method: str, path: str, body: dict | None = None, timeout: float = 45.0) -> tuple[int, dict]:
+def api(method: str, path: str, body: dict | None = None, timeout: float = 45.0) -> tuple[int, dict]:
+    """One call to couch-daemon on loopback. (Named api, not http: a function called http shadowed the http module
+    and crashed the first real run on the NUC, 2026-11-09.)"""
     c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=timeout)
     try:
         data = json.dumps(body).encode() if body is not None else None
@@ -88,7 +90,16 @@ def tail(text: str, n: int = 15) -> list[str]:
 
 
 def moonlight_running(runner=run) -> bool:
-    return bool(runner(["pgrep", "-f", "moonlight/current/AppRun"]).strip())
+    # anchored on the command's start so a shell whose command line merely mentions the path never counts
+    return bool(runner(["pgrep", "-f", "^/opt/couch/moonlight/current/"]).strip())
+
+
+def last_stream(path: str) -> dict:
+    try:
+        lines = [ln for ln in open(path, encoding="utf-8").read().splitlines() if ln.strip()]
+        return json.loads(lines[-1]) if lines else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def journal_since(epoch: float, runner=run) -> list[str]:
@@ -161,7 +172,7 @@ def main(argv=None) -> int:
 
     t0 = time.time()
     try:
-        code, st = http("GET", "/status", timeout=5)
+        code, st = api("GET", "/status", timeout=5)
     except OSError as exc:
         return finish("ERROR", f"couch-daemon not reachable on 127.0.0.1:{PORT}: {exc}")
     if code != 200:
@@ -176,7 +187,7 @@ def main(argv=None) -> int:
     ev(f"host {st.get('host')} ({st.get('ip')}) sunshine={st.get('sunshine')}; kiosk pid {base.get('MainPID')} "
        f"restarts {base.get('NRestarts')}")
 
-    code, body = http("POST", "/stream", {"app": a.app, "launch": True})
+    code, body = api("POST", "/stream", {"app": a.app, "launch": True})
     if code != 200:
         return finish("ERROR", f"POST /stream -> {code}: {body.get('error')} (apps: {body.get('apps')}, "
                                f"list_error: {body.get('list_error')})")
@@ -220,27 +231,35 @@ def main(argv=None) -> int:
     held = time.time() - started_at
     ev(f"held {held:.0f} s: kiosk pid stable, stream child alive, launcher quiet")
 
-    # Phase 3: quit and confirm the return to the launcher.
-    http("POST", "/quit")
+    # Phase 3: quit and confirm the return to the launcher. A daemon-driven quit goes through Machine.force_quit,
+    # which changes state outside tick() and so writes NO "STREAMING -> IDLE" log line: the proof is the streaming
+    # flag gone + a new streams.jsonl entry (the launcher reaped the child) + no moonlight-qt process left.
+    streams_path = os.path.join(STATE, "streams.jsonl")
+    streams_off = size(streams_path)
+    api("POST", "/quit")
     q0 = time.time()
     back = False
     while time.time() - q0 < 15:
         time.sleep(0.5)
-        new = read_from(la_log, la_off)
-        if not os.path.exists(flag) and ("STREAMING -> IDLE" in new or "STREAMING -> LOST" in new):
+        if not os.path.exists(flag) and size(streams_path) > streams_off:
             back = True
             break
     rec["quit_s"] = round(time.time() - q0, 1)
     evidence(t0, ml_off)
     rec["moonlight_left_running"] = moonlight_running()
+    rec["stream_record"] = last_stream(streams_path) if back else {}
     if not back:
-        return finish("FAIL", f"after /quit the launcher did not return to IDLE within 15 s (held {held:.0f} s first)")
+        return finish("FAIL", f"after /quit the stream flag or the launcher's stream record did not settle within 15 s "
+                              f"(held {held:.0f} s first)")
     if rec["kiosk_after"].get("MainPID") != base.get("MainPID"):
         return finish("FAIL", "the kiosk restarted when the stream was quit")
     if rec["moonlight_left_running"]:
         return finish("FAIL", f"a moonlight-qt process is still running {rec['quit_s']} s after /quit")
+    code = rec["stream_record"].get("exit_code")
+    how = ("moonlight-qt needed SIGKILL after the 3 s SIGTERM grace" if isinstance(code, int) and code < 0
+           else f"moonlight-qt exit {code}")
     return finish("PASS", f"{a.app!r} streamed for {held:.0f} s on kiosk pid {base.get('MainPID')} (0 restarts), "
-                          f"quit returned to the launcher in {rec['quit_s']} s, no moonlight-qt left")
+                          f"quit returned to the launcher in {rec['quit_s']} s ({how}), no moonlight-qt left")
 
 
 if __name__ == "__main__":

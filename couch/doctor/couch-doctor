@@ -575,7 +575,17 @@ def check_streams() -> dict:
                else f"moonlight-qt exited {last.get('exit_code')} (see /var/log/couch/moonlight.log)")
         return result("streams", RED, f"last stream of {last.get('app')!r} died after {last.get('duration_s')} s - "
                                       f"{how}; earlier: {desc}", detail)
-    failed = sum(1 for s in streams if s.get("exit_code") not in (0, None) or crashed(s))
+    def failed_stream(s: dict) -> bool:
+        # A negative exit code after a real session is the launcher stopping the child on a quit request
+        # (SIGTERM, then SIGKILL after 3 s): not a failure of the stream.
+        code = s.get("exit_code")
+        if crashed(s):
+            return True
+        if isinstance(code, int) and code < 0 and (s.get("duration_s") or 0) >= QUICK_DEATH_S:
+            return False
+        return code not in (0, None)
+
+    failed = sum(1 for s in streams if failed_stream(s))
     return result("streams", YELLOW if failed >= 2 else GREEN, desc, detail)
 
 
