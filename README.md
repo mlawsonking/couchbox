@@ -77,7 +77,7 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 | Gamepad mapping (D-pad/stick/A/B/Start, Guide held 3 s, two pads, raw-joystick fallback, keyboard/mouse ignored) | yes: synthetic SDL events, including through the real SDL event queue | the dongle/BT/wired pads' actual SDL mappings; Guide visible while moonlight has focus (`SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS`) |
 | Every screen renders (HOME, WAKING, CONNECTING, STREAMING, LOST, PAIR, MENU + attract) | yes: golden PNGs at 1920x1080 and 3840x2160, pixel-diffed | how it looks on the TV from the couch |
 | Frame budget < 8 ms at 4K on CPU | yes: p95 of steady-state frames per screen (actual: < 1 ms on CI CPUs) | the NUC's CPU |
-| moonlight-qt child supervision (argv, exit codes, not-paired detection, a quit is SIGTERM, moonlight-qt's own quit path, exit 0; a hung child that ignores SIGTERM is SIGKILLed, reaped and Sunshine told with `moonlight-qt quit` within 17 s) | yes: a fake moonlight-qt CLI | real moonlight-qt exit codes/messages (the not-paired text match is a guess at its wording) |
+| moonlight-qt child supervision (argv, exit codes, not-paired detection, a quit is SIGTERM, moonlight-qt's own quit path, exit 0; a hung child that ignores SIGTERM is SIGKILLed, reaped and Sunshine told with `moonlight-qt quit` within 24 s) | yes: a fake moonlight-qt CLI | real moonlight-qt exit codes/messages (the not-paired text match is a guess at its wording) |
 | Bad config (syntax error, wrong types, bad MAC, IP instead of name, art URLs) never crashes; hot reload | yes: pytest | - |
 | venv holds only pygame-ce, from the hash-pinned lock; the launcher renders every screen as user `couch` in Ubuntu 24.04 | yes: container rehearsal (`--selftest`) | on the real Xorg kiosk (SDL x11) |
 | Launcher crash loop -> moonlight-qt GUI fallback, then retry | yes: bats | - |
@@ -205,7 +205,10 @@ window sizes; matching modes needs nothing installed and is testable with a fake
 **Quit.** moonlight-qt does not ignore SIGTERM: SDL turns it into "Quit event received", it stops its streams within the
 second and then sends `/cancel` to Sunshine, which answers about 3 s later (it ends the app and restores the PC's display
 first). The old 3 s grace SIGKILLed it mid-reply (exit -9). Now `backend.py` sends SIGTERM and waits `TERM_GRACE` (7 s),
-SIGKILLs only as a last resort, and after a kill runs `moonlight-qt quit <host>` so Sunshine's session is ended anyway
-(recorded in `streams.jsonl` as `killed` / `sunshine_quit`). Worst case for a child that ignores everything:
-7 + 2 + 0.5 s to kill and reap it, 5 + 2 + 0.5 s for the Sunshine quit = 17 s (`STOP_BOUND`); a normal quit is the
-host's ~3 s. `couch-streamtest` measures all of it on the real TV (window vs screen, exit code, Sunshine `currentgame`).
+SIGKILLs only as a last resort, and after a kill runs `moonlight-qt quit <host>` so Sunshine's session is ended anyway.
+It then asks Sunshine itself (`GET /serverinfo`, `<currentgame>`; unauthenticated, the port the daemon probes): a
+stream that never got video exits 0 on SIGTERM *without* sending `/cancel` (seen on the NUC: Desktop kept running on the
+PC after a "successful" quit), so a session still there after 3 s is ended with `moonlight-qt quit` too. What happened is
+recorded in `streams.jsonl` (`killed`, `sunshine_leftover`, `sunshine_quit`, `sunshine_game_after`). Worst case with every
+stage taking its full time: 7 + 2 + 0.5 s to kill and reap, 3 + 2 s settling on Sunshine, 5 + 2 + 0.5 s for the Sunshine
+quit, 2 s to verify = 24 s (`STOP_BOUND`); a normal quit is the host's ~3-4 s. `couch-streamtest` measures all of it on the real TV (window vs screen, exit code, Sunshine `currentgame`).

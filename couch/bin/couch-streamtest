@@ -224,6 +224,18 @@ def main(argv=None) -> int:
             print(msg, flush=True)
 
     def finish(result: str, reason: str = "") -> int:
+        if result != "PASS" and os.path.exists(flag):
+            # A failed check must not leave the stream running on the TV (and a session on the PC): quit it the way a
+            # player would, and say how that went.
+            try:
+                api("POST", "/quit", timeout=5)
+            except OSError:
+                pass
+            t = time.time()
+            while os.path.exists(flag) and time.time() - t < 30:
+                time.sleep(0.5)
+            rec["cleanup_quit"] = "stream stopped" if not os.path.exists(flag) else "stream STILL RUNNING after 30 s"
+            reason += f" [cleanup: {rec['cleanup_quit']}]"
         rec["result"], rec["reason"] = result, reason
         if a.json:
             print(json.dumps(rec, indent=1))
@@ -315,7 +327,6 @@ def main(argv=None) -> int:
         geometry = f"window {win['w']}x{win['h']}+{win['x']}+{win['y']} on a {scr[0]}x{scr[1]} screen"
         ev(geometry)
         if not fills_screen(win, scr):
-            api("POST", "/quit")
             evidence(t0, ml_off)
             return finish("FAIL", f"the stream does not fill the TV: {geometry} (no window manager runs, so the X "
                                   f"mode must equal the stream's mode; see couch/display.py)")

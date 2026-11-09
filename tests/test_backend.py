@@ -194,7 +194,8 @@ def test_a_hung_sunshine_quit_is_itself_killed_within_the_bound(env, monkeypatch
 
 
 def test_the_documented_bound_is_the_real_bound():
-    total = B.TERM_GRACE + B.KILL_WAIT + B.REAP_WAIT + B.SUNSHINE_QUIT_TIMEOUT + B.KILL_WAIT + B.REAP_WAIT
+    total = (B.TERM_GRACE + B.KILL_WAIT + B.REAP_WAIT + B.SETTLE + B.PROBE_TIMEOUT + B.SUNSHINE_QUIT_TIMEOUT
+             + B.KILL_WAIT + B.REAP_WAIT + B.PROBE_TIMEOUT)
     assert B.STOP_BOUND == total
     readme = open(os.path.join(REPO, "README.md"), encoding="utf-8").read()
     assert f"within {B.STOP_BOUND:.0f} s" in readme, "README's hung-child figure is out of date"
@@ -247,6 +248,151 @@ def test_a_screen_already_on_the_stream_mode_is_not_touched(env, monkeypatch):
     assert wait_exit(b) == ("exited", 0)
     log = tmp / "xcalls"
     assert not any("--mode" in ln for ln in log.read_text().splitlines())   # no mode set = no TV re-sync per stream
+
+
+class FakeSunshine:
+    """GET /serverinfo on a loopback port: <currentgame> follows `game` (a callable or an int), like Sunshine's."""
+
+    def __init__(self, game):
+        import http.server
+        import threading
+        outer = self
+        outer.game = game
+        outer.hits = 0
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                outer.hits += 1
+                g = outer.game() if callable(outer.game) else outer.game
+                body = f'<?xml version="1.0"?><root status_code="200"><currentgame>{g}</currentgame></root>'.encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.srv.shutdown()
+
+
+@pytest.fixture
+def sunshine(monkeypatch):
+    made = []
+
+    def make(game):
+        s = FakeSunshine(game)
+        made.append(s)
+        monkeypatch.setattr(B, "SUNSHINE_PORT", s.port)
+        return s
+    yield make
+    for s in made:
+        s.close()
+
+
+def backend_with_host_ip(cfg, ip="127.0.0.1"):
+    p = StaticProber("open")
+    p.ip = ip
+    return B.LocalBackend(cfg, prober=p, moonlight=FAKE)
+
+
+def test_a_clean_quit_leaves_nothing_to_do_on_sunshine(env, monkeypatch, sunshine):
+    cfg, tmp, argv_log = env
+    s = sunshine(0)
+    monkeypatch.setenv("FAKE_MOONLIGHT_MODE", "graceful")
+    monkeypatch.setenv("FAKE_TERM_DELAY", "0.2")
+    b = backend_with_host_ip(cfg)
+    b.start_stream("Desktop")
+    time.sleep(0.3)
+    assert b.stop_stream() is True
+    rec = read_streams(tmp)[-1]
+    assert rec["exit_code"] == 0 and "sunshine_quit" not in rec and "sunshine_leftover" not in rec
+    assert not any(c.startswith("quit") for c in calls(argv_log)) and s.hits == 1      # asked once, found it idle
+
+
+def test_a_session_left_behind_by_an_exit_0_is_ended_and_verified(env, monkeypatch, sunshine):
+    """2026-11-09: a stream that never got video exited 0 on SIGTERM without /cancel; Desktop kept running on the PC."""
+    cfg, tmp, argv_log = env
+    state = {"game": 881448767}
+    s = sunshine(lambda: state["game"])
+    monkeypatch.setattr(B, "SETTLE", 0.5)
+    monkeypatch.setenv("FAKE_MOONLIGHT_MODE", "graceful")
+    monkeypatch.setenv("FAKE_TERM_DELAY", "0.1")
+    b = backend_with_host_ip(cfg)
+    orig = b.sunshine_quit
+
+    def quit_and_clear(target):                        # the real `moonlight-qt quit` ends the session on the PC
+        state["game"] = 0
+        return orig(target)
+    b.sunshine_quit = quit_and_clear
+    b.start_stream("Desktop")
+    time.sleep(0.3)
+    assert b.stop_stream() is True
+    rec = read_streams(tmp)[-1]
+    assert rec["exit_code"] == 0 and "killed" not in rec
+    assert rec["sunshine_leftover"] == 881448767 and rec["sunshine_quit"] == "ok" and rec["sunshine_game_after"] == 0
+    assert calls(argv_log)[-1] == "quit gamepc.local"
+
+
+def test_a_cancel_still_in_progress_on_the_pc_is_given_time_and_not_repeated(env, monkeypatch, sunshine):
+    cfg, tmp, argv_log = env
+    t0 = time.monotonic()
+    sunshine(lambda: 77 if time.monotonic() - t0 < 1.0 else 0)       # Sunshine finishes its teardown after ~1 s
+    monkeypatch.setattr(B, "SETTLE", 3.0)
+    monkeypatch.setenv("FAKE_MOONLIGHT_MODE", "graceful")
+    monkeypatch.setenv("FAKE_TERM_DELAY", "0.1")
+    b = backend_with_host_ip(cfg)
+    b.start_stream("Desktop")
+    time.sleep(0.3)
+    assert b.stop_stream() is True
+    rec = read_streams(tmp)[-1]
+    assert "sunshine_quit" not in rec and "sunshine_leftover" not in rec
+    assert not any(c.startswith("quit") for c in calls(argv_log))
+
+
+def test_a_pc_that_cannot_be_asked_is_left_alone(env, monkeypatch):
+    cfg, tmp, argv_log = env
+    monkeypatch.setattr(B, "SUNSHINE_PORT", 1)                       # nothing listens: unreachable
+    monkeypatch.setenv("FAKE_MOONLIGHT_MODE", "graceful")
+    monkeypatch.setenv("FAKE_TERM_DELAY", "0.1")
+    b = backend_with_host_ip(cfg)
+    b.start_stream("Desktop")
+    time.sleep(0.3)
+    t0 = time.monotonic()
+    assert b.stop_stream() is True
+    assert time.monotonic() - t0 < B.STOP_BOUND
+    assert "sunshine_quit" not in read_streams(tmp)[-1]
+    assert not any(c.startswith("quit") for c in calls(argv_log))
+
+
+def test_after_a_kill_the_session_is_verified_gone(env, monkeypatch, sunshine):
+    cfg, tmp, _ = env
+    state = {"game": 5}
+    sunshine(lambda: state["game"])
+    monkeypatch.setattr(B, "TERM_GRACE", 0.3)
+    monkeypatch.setenv("FAKE_MOONLIGHT_MODE", "hang")
+    b = backend_with_host_ip(cfg)
+    orig = b.sunshine_quit
+    b.sunshine_quit = lambda t: (state.update(game=0), orig(t))[1]
+    b.start_stream("Desktop")
+    time.sleep(0.2)
+    assert b.stop_stream() is True
+    rec = read_streams(tmp)[-1]
+    assert rec["killed"] is True and rec["sunshine_quit"] == "ok" and rec["sunshine_game_after"] == 0
+
+
+def test_daemon_backend_asks_sunshine_at_the_ip_the_daemon_found():
+    from couch.launcher import daemon_client as DC
+    b = DC.DaemonBackend.__new__(DC.DaemonBackend)
+    b.poller = type("P", (), {"status": {"ip": "10.1.2.3"}})()
+    assert b.host_ip() == "10.1.2.3"
+    b.poller = type("P", (), {"status": None})()
+    assert b.host_ip() is None
 
 
 def test_pairing(env, monkeypatch):

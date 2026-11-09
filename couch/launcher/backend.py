@@ -5,6 +5,7 @@ uses DaemonBackend instead, which asks the daemon on 127.0.0.1 for the same oper
 non-blocking: probes run in a background thread and calls return the latest cached answer."""
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -36,7 +37,17 @@ TERM_GRACE = 7.0                 # SIGTERM -> SIGKILL
 KILL_WAIT = 2.0                  # SIGKILL -> reaped
 REAP_WAIT = 0.5                  # final wait() once the group has been signalled
 SUNSHINE_QUIT_TIMEOUT = 5.0      # `moonlight-qt quit <host>` after a forced kill
-STOP_BOUND = TERM_GRACE + KILL_WAIT + REAP_WAIT + SUNSHINE_QUIT_TIMEOUT + KILL_WAIT + REAP_WAIT   # 17 s worst case
+# Sunshine must not be left with a session. moonlight-qt only sends /cancel on a clean teardown of a stream that ran: a
+# stream that failed to start ("No video received from host") exits 0 on SIGTERM without it (NUC, 2026-11-09: Desktop
+# kept running on the PC after a quit that reported success). So after every user-requested stop the launcher asks
+# Sunshine itself (GET /serverinfo, <currentgame>, the same unauthenticated port the daemon probes) and, if a session
+# is still there after SETTLE seconds, ends it with `moonlight-qt quit`. Unreachable / unreadable = nothing to do.
+SUNSHINE_PORT = 47989
+PROBE_TIMEOUT = 2.0              # one GET /serverinfo
+SETTLE = 3.0                     # a /cancel in progress on the PC gets this long to finish before we quit it ourselves
+SESSION_CHECK = SETTLE + PROBE_TIMEOUT       # worst case of one settle loop (its last probe starts at the deadline)
+STOP_BOUND = (TERM_GRACE + KILL_WAIT + REAP_WAIT + SESSION_CHECK + SUNSHINE_QUIT_TIMEOUT + KILL_WAIT + REAP_WAIT
+              + PROBE_TIMEOUT)    # 24 s worst case: every stage taking its full time
 
 
 class Child:
@@ -297,16 +308,51 @@ class LocalBackend:
         child, self.stream = self.stream, None
         ok = child.stop(TERM_GRACE)
         extra: dict = {}
+        target = self.stream_target or self.cfg.host
         if child.killed:
             extra["killed"] = True
-            extra["sunshine_quit"] = self.sunshine_quit(self.stream_target or self.cfg.host)
+            extra["sunshine_quit"] = self.sunshine_quit(target)
+        else:
+            left = self.sunshine_game(settle=SETTLE)            # a clean teardown leaves 0 at once: one probe
+            if left:
+                extra["sunshine_leftover"] = left
+                extra["sunshine_quit"] = self.sunshine_quit(target)
+        if "sunshine_quit" in extra:
+            extra["sunshine_game_after"] = self.sunshine_game()     # verify by effect: None = could not be read
         record_stream(self.stream_app, child.started, child.poll(), extra=extra)
         self._restore_display()
         return ok
 
+    def host_ip(self) -> str | None:
+        return getattr(self.prober, "ip", None)
+
+    def sunshine_game(self, settle: float = 0.0) -> int | None:
+        """Sunshine's <currentgame> (0 = no session) from GET /serverinfo on the game PC, waiting up to `settle`
+        seconds for a non-zero value to drop to 0. None = the PC could not be asked (no IP yet, unreachable, odd reply):
+        the caller then does nothing. Bounded by settle + PROBE_TIMEOUT."""
+        ip = self.host_ip()
+        if not ip:
+            return None
+        deadline = time.monotonic() + settle
+        while True:
+            game = None
+            try:
+                c = http.client.HTTPConnection(ip, SUNSHINE_PORT, timeout=PROBE_TIMEOUT)
+                try:
+                    c.request("GET", "/serverinfo")
+                    m = re.search(r"<currentgame>(\d+)</currentgame>", c.getresponse().read().decode("utf-8", "replace"))
+                finally:
+                    c.close()
+                game = int(m.group(1)) if m else None
+            except (OSError, http.client.HTTPException):
+                game = None
+            if not game or time.monotonic() >= deadline:
+                return game
+            time.sleep(0.25)
+
     def sunshine_quit(self, target: str) -> str:
         """`moonlight-qt quit <host>`: ends the running app (the session) on Sunshine. Used when moonlight-qt had to
-        be killed and so never sent /cancel itself. Bounded; returns "ok", "rc=N", "timeout" or "error: ..."."""
+        be killed, or exited without sending /cancel itself. Bounded; "ok", "rc=N", "timeout" or "error: ..."."""
         try:
             q = Child([self.moonlight, "quit", target], "moonlight.log")
         except OSError as exc:
@@ -318,7 +364,7 @@ class LocalBackend:
         except subprocess.TimeoutExpired:
             result = "timeout"
         q.stop(0.0)
-        log.info("moonlight-qt quit %s after a forced kill: %s", target, result)
+        log.info("moonlight-qt quit %s (the stream left a Sunshine session): %s", target, result)
         return result
 
     # -- pairing

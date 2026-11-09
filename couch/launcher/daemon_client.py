@@ -137,6 +137,10 @@ class DaemonBackend(LocalBackend):
         if not self.apps_poller.is_alive():
             self.apps_poller.start()
 
+    def host_ip(self) -> str | None:
+        st = self.poller.status
+        return st.get("ip") if st else None
+
     def apps(self) -> list[str]:
         """Every app the daemon will launch (its allow-list), as last listed - the launcher's tile grid."""
         return list(self.apps_poller.apps)
