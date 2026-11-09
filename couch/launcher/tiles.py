@@ -4,9 +4,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import input as inp
-from .config import Tile
+from .config import Tile, is_hidden
 
 COLS_MAX = 4
+
+
+def merge_tiles(base: list[Tile], daemon_apps: list[str], hide=()) -> list[Tile]:
+    """The home grid: the configured tiles ([[tile]] blocks, then the Steam-library tiles with art, in that order -
+    Desktop and Steam Big Picture keep their place), then one generated card for every other app couch-daemon lists
+    from Sunshine, sorted by name. Never a duplicate (same app name, case/space-insensitive), never a hidden app.
+    The daemon only lists what its allow-list will launch, so no tile here makes anything new playable."""
+    def key(app: str) -> str:
+        return " ".join(app.casefold().split())
+    seen = {key(t.app) for t in base}
+    extras: dict[str, Tile] = {}
+    for app in daemon_apps:
+        if not isinstance(app, str) or not app.strip() or is_hidden(app, hide):
+            continue
+        k = key(app)
+        if k not in seen and k not in extras:
+            extras[k] = Tile(app.strip()[:40], app.strip())
+    return list(base) + sorted(extras.values(), key=lambda t: (key(t.app), t.app))
 
 
 @dataclass

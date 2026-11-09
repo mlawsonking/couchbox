@@ -29,6 +29,16 @@ TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 
+# Sunshine apps that are never given an automatic tile (couch.toml [tiles] hide replaces this list; an explicit
+# [[tile]] block always shows). SteamVR is useless from the couch: it needs a headset on the PC.
+DEFAULT_HIDE = ["SteamVR"]
+
+
+def is_hidden(app: str, hide) -> bool:
+    key = " ".join(app.casefold().split())
+    return any(key == " ".join(str(h).casefold().split()) for h in hide)
+
+
 @dataclass(frozen=True)
 class Tile:
     name: str
@@ -46,6 +56,7 @@ class Config:
     custom_resolution: str = "1920x1080"
     custom_fps: int = 60
     custom_bitrate_kbps: int = 15000
+    hide_tiles: list[str] = field(default_factory=lambda: list(DEFAULT_HIDE))   # [tiles] hide: never auto-tiled
     kiosk_mode: str = "1920x1080@60"  # [display] kiosk_mode: the X screen's mode ("preferred" = the TV's own, 4K30)
     pair_policy: str = "menu"
     setup_pin: str = ""              # [gamepad] setup_pin: 4 digits; empty = no "Set up a controller" menu item
@@ -119,7 +130,7 @@ def load(path: str = DEFAULT_PATH, library: str | None = None) -> Config:
     cfg = _load(path)
     lib = library_tiles(library) if library else (library_tiles() if path == DEFAULT_PATH else [])
     have = {t.app for t in cfg.tiles}
-    cfg.tiles = cfg.tiles + [t for t in lib if t.app not in have]
+    cfg.tiles = cfg.tiles + [t for t in lib if t.app not in have and not is_hidden(t.app, cfg.hide_tiles)]
     return cfg
 
 
@@ -198,6 +209,13 @@ def _load(path: str) -> Config:
     if cfg.kiosk_mode != "preferred" and not re.match(r"^\d{3,5}x\d{3,5}(@\d{2,3})?$", cfg.kiosk_mode):
         problems.append('display.kiosk_mode must look like 1920x1080@60 (or "preferred")')
         cfg.kiosk_mode = "1920x1080@60"
+
+    tl = section("tiles")
+    hide = get(tl, "hide", list, cfg.hide_tiles)
+    if all(isinstance(h, str) for h in hide):
+        cfg.hide_tiles = [h.strip() for h in hide if h.strip()]
+    else:
+        problems.append("tiles.hide must be a list of app names")
 
     pair = section("pair")
     cfg.pair_policy = get(pair, "policy", str, cfg.pair_policy)

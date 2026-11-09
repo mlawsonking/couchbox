@@ -56,9 +56,71 @@ class StatusPoller(threading.Thread):
         self._stop.set()
 
 
+APPS_CACHE = "apps-cache.json"
+
+
+class AppsPoller(threading.Thread):
+    """Keeps the list of Sunshine apps the daemon will launch (GET /apps) for the launcher's tile grid.
+
+    The daemon only knows the list while the game PC answers `moonlight-qt list`, and forgets it on every restart
+    (nightly reboot, couch-update) - but the PC is usually asleep at that moment. So the last good list is persisted in
+    the state dir and loaded at start: the tiles are there on the first frame, PC asleep or not. An empty or failed
+    answer never replaces a good list. The poll runs in this thread: /apps can take seconds (it runs `moonlight-qt
+    list`), the UI must never wait for it."""
+
+    def __init__(self, caller=call, cache_path: str | None = None, interval: float = 20.0, retry: float = 60.0):
+        super().__init__(daemon=True, name="couch-apps-poll")
+        self._call, self.cache_path, self.interval, self.retry = caller, cache_path, interval, retry
+        self._stop_evt = threading.Event()
+        self.apps: list[str] = self._load()
+
+    @staticmethod
+    def _clean(raw) -> list[str]:
+        return [a.strip() for a in raw if isinstance(a, str) and a.strip()] if isinstance(raw, list) else []
+
+    def _load(self) -> list[str]:
+        try:
+            with open(self.cache_path or "", encoding="utf-8") as fh:
+                return self._clean(json.load(fh).get("apps"))
+        except (OSError, ValueError, AttributeError):
+            return []
+
+    def _save(self) -> None:
+        if not self.cache_path:
+            return
+        tmp = self.cache_path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"apps": self.apps, "at": time.time()}, fh)
+            os.replace(tmp, self.cache_path)
+        except OSError:
+            pass
+
+    def poll_once(self) -> bool:
+        """One GET /apps. True when it returned a usable (non-empty) list; the list is replaced only then."""
+        try:
+            code, body = self._call("GET", "/apps", timeout=45.0)
+        except Exception:                     # a poller thread must never die: the tiles would freeze silently
+            return False
+        apps = self._clean(body.get("apps")) if code == 200 and isinstance(body, dict) else []
+        if not apps:
+            return False
+        if apps != self.apps:
+            self.apps = apps
+            self._save()
+        return True
+
+    def run(self) -> None:
+        while not self._stop_evt.is_set():
+            self._stop_evt.wait(self.interval if self.poll_once() else self.retry)
+
+    def stop(self) -> None:
+        self._stop_evt.set()
+
+
 class DaemonBackend(LocalBackend):
     def __init__(self, cfg: Config, caller=call, poller: StatusPoller | None = None, moonlight=None,
-                 state_dir: str | None = None):
+                 state_dir: str | None = None, apps_poller: AppsPoller | None = None):
         self.cfg = cfg
         self._call = caller
         self.poller = poller or StatusPoller(caller=caller)
@@ -71,6 +133,17 @@ class DaemonBackend(LocalBackend):
         self.pairing: Child | None = None
         self.last_error: str | None = None
         self.prober = self.poller            # LocalBackend.close() stops it
+        self.apps_poller = apps_poller or AppsPoller(caller=caller, cache_path=os.path.join(self.state_dir, APPS_CACHE))
+        if not self.apps_poller.is_alive():
+            self.apps_poller.start()
+
+    def apps(self) -> list[str]:
+        """Every app the daemon will launch (its allow-list), as last listed - the launcher's tile grid."""
+        return list(self.apps_poller.apps)
+
+    def close(self) -> None:
+        self.apps_poller.stop()
+        super().close()
 
     def host_up(self) -> bool | None:
         st = self.poller.status

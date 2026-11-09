@@ -14,7 +14,7 @@ from . import render as R
 from . import state as S
 from .config import DEFAULT_PATH, Config, Watcher, load
 from . import gamepads as G
-from .tiles import CLOSE, PAIR, RESTART, SETUP_PAD, Grid, Menu, PinEntry
+from .tiles import CLOSE, PAIR, RESTART, SETUP_PAD, Grid, Menu, PinEntry, merge_tiles
 
 ATTRACT_AFTER = 10 * 60.0      # dim the home screen
 SLEEP_AFTER = 60 * 60.0        # display off (black + DPMS hook)
@@ -33,6 +33,7 @@ class App:
         self.b = backend
         self.m = S.Machine(backend, host=cfg.host, mac=cfg.mac, now=now)
         self.m.config_error = cfg.error
+        self.daemon_apps: list[str] = []          # what couch-daemon lists from Sunshine (DaemonBackend only)
         self.grid = Grid(list(cfg.tiles))
         self.menu = Menu(pair_allowed=cfg.pair_policy == "menu", pad_setup_allowed=bool(cfg.setup_pin))
         self.menu_open = False
@@ -65,10 +66,29 @@ class App:
         self.m.host, self.m.mac, self.m.config_error = cfg.host, cfg.mac, cfg.error
         if hasattr(self.b, "cfg"):
             self.b.cfg = cfg
-        self.grid.replace(cfg.tiles)
+        self._rebuild_tiles()
         self.menu.pair_allowed = cfg.pair_policy == "menu"
         self.menu.pad_setup_allowed = bool(cfg.setup_pin)
         self.menu.focus = 0
+
+    def _rebuild_tiles(self) -> bool:
+        """Config + library tiles, then a card for every other app the daemon lists. True when the grid changed."""
+        new = merge_tiles(self.cfg.tiles, self.daemon_apps, self.cfg.hide_tiles)
+        if new == self.grid.tiles:
+            return False
+        self.grid.replace(new)               # keeps focus on the same app when it still exists
+        return True
+
+    def set_daemon_apps(self, apps: list[str]) -> bool:
+        """Called about once a second with the daemon's app list. An empty list (PC asleep, listing failed) never
+        clears the tiles: the last good list stays. A renamed/removed app disappears, a new one appears, no restart."""
+        if not apps or list(apps) == self.daemon_apps:
+            return False
+        self.daemon_apps = list(apps)
+        changed = self._rebuild_tiles()
+        if changed:
+            log.info("tiles: %d (%d apps listed by the daemon)", len(self.grid.tiles), len(self.daemon_apps))
+        return changed
 
     def screen(self) -> str:
         sc = STATE_TO_SCREEN[self.m.state]
@@ -364,7 +384,9 @@ def main(config_path: str = DEFAULT_PATH) -> int:
     clock = pygame.time.Clock()
     next_slow = 0.0
     exit_at = time.monotonic() + float(os.environ["COUCH_EXIT_AFTER"]) if os.environ.get("COUCH_EXIT_AFTER") else None
-    log.info("launcher up: %sx%s, host %s, %d tiles", *screen.get_size(), cfg.host, len(cfg.tiles))
+    if hasattr(backend, "apps"):
+        app.set_daemon_apps(backend.apps())        # the persisted list: tiles are there on the first frame
+    log.info("launcher up: %sx%s, host %s, %d tiles", *screen.get_size(), cfg.host, len(app.grid.tiles))
     try:
         while not app.quit_requested:
             now = time.monotonic()
@@ -395,6 +417,8 @@ def main(config_path: str = DEFAULT_PATH) -> int:
                     log.info("config reloaded%s", f" with problems: {new.error}" if new.error else "")
                     app.apply_config(new)
                 app.refresh_health()
+                if hasattr(backend, "apps"):
+                    app.set_daemon_apps(backend.apps())
                 if hasattr(backend, "pending"):
                     app.handle_pending(backend.pending(), now)
             dirty = renderer.draw(screen, app.view(now))

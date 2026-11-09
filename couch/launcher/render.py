@@ -237,7 +237,7 @@ class Renderer:
             for tile, r in zip(v.tiles, rects):
                 rr = r.move(0, -off)
                 base.blit(self.art(tile, rr.size), rr)
-                label = self.text(tile.name[:28], 36, TEXT)
+                label = self.text(tile.name if len(tile.name) <= 28 else tile.name[:25] + "...", 36, TEXT)
                 base.blit(label, label.get_rect(midtop=(rr.centerx, rr.bottom + self.px(14))))
             base.set_clip(None)
             if v.notice:

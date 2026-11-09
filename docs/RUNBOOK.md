@@ -109,6 +109,12 @@ turns red). Then plug the Xbox Wireless Adapter into the NUC.
   NUC and run `sudo /opt/couch/bin/couch-update --import /path/to/couchbox-export` (or `--import http://<pc>:<port>/`
   if you serve the folder on the LAN). The tile appears within a second. Art is read from `/var/lib/couch/art`
   only; tiles without art get a coloured card with the game's initial.
+- **Every Sunshine app gets a tile automatically.** The launcher shows the `[[tile]]` blocks first (Desktop and Steam
+  Big Picture keep their place), then the Steam-library tiles with art, then a coloured card for every other app
+  couch-daemon lists from Sunshine, sorted by name. New, renamed and removed apps show up within about 20 s without a
+  restart; the last good list is kept in `/var/lib/couch/apps-cache.json`, so the tiles are there after a reboot even
+  while the PC is asleep. `[tiles] hide = [...]` in `couch.toml` keeps apps out (default `["SteamVR"]`; `[]` shows all;
+  an explicit `[[tile]]` always shows). Nothing new becomes playable: the daemon only launches what it lists.
 - **Hand-made tiles:** add `[[tile]]` blocks to `couch.toml` (`name`, `app` = exact Sunshine app name, optional
   `art` = file in `/var/lib/couch/art`).
 

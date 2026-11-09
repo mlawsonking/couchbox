@@ -15,6 +15,13 @@ custom_resolution = "1920x1080"
 custom_fps = 60
 custom_bitrate_kbps = 15000
 
+[tiles]
+# Every app couch-daemon lists from Sunshine gets a tile automatically: first the [[tile]] blocks below (Desktop and
+# Steam Big Picture keep their place), then the Steam-library tiles with box art, then a card per remaining app, by name.
+# Apps named here never get an AUTOMATIC tile (an explicit [[tile]] always shows). Replace the list to change it;
+# hide = [] shows everything. The default hides SteamVR, which is useless from the couch.
+hide = ["SteamVR"]
+
 [display]
 # The kiosk's X screen mode. It must equal the stream's mode for the picture to fill the TV (no window manager runs).
 # Streams of another size switch the screen for their duration and back. "preferred" = the TV's own mode (4K at 30 Hz).
