@@ -77,7 +77,7 @@ container rehearsal x2 (`ubuntu:24.04` plain and systemd-chroot style), workstat
 | Gamepad mapping (D-pad/stick/A/B/Start, Guide held 3 s, two pads, raw-joystick fallback, keyboard/mouse ignored) | yes: synthetic SDL events, including through the real SDL event queue | the dongle/BT/wired pads' actual SDL mappings; Guide visible while moonlight has focus (`SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS`) |
 | Every screen renders (HOME, WAKING, CONNECTING, STREAMING, LOST, PAIR, MENU + attract) | yes: golden PNGs at 1920x1080 and 3840x2160, pixel-diffed | how it looks on the TV from the couch |
 | Frame budget < 8 ms at 4K on CPU | yes: p95 of steady-state frames per screen (actual: < 1 ms on CI CPUs) | the NUC's CPU |
-| moonlight-qt child supervision (argv, exit codes, not-paired detection, a hung child that ignores SIGTERM is killed and reaped in < 5 s) | yes: a fake moonlight-qt CLI | real moonlight-qt exit codes/messages (the not-paired text match is a guess at its wording) |
+| moonlight-qt child supervision (argv, exit codes, not-paired detection, a quit is SIGTERM, moonlight-qt's own quit path, exit 0; a hung child that ignores SIGTERM is SIGKILLed, reaped and Sunshine told with `moonlight-qt quit` within 17 s) | yes: a fake moonlight-qt CLI | real moonlight-qt exit codes/messages (the not-paired text match is a guess at its wording) |
 | Bad config (syntax error, wrong types, bad MAC, IP instead of name, art URLs) never crashes; hot reload | yes: pytest | - |
 | venv holds only pygame-ce, from the hash-pinned lock; the launcher renders every screen as user `couch` in Ubuntu 24.04 | yes: container rehearsal (`--selftest`) | on the real Xorg kiosk (SDL x11) |
 | Launcher crash loop -> moonlight-qt GUI fallback, then retry | yes: bats | - |
@@ -187,3 +187,25 @@ kiosk is now a bare Xorg server started by `xinit` on tty1 (`installer/files/sys
 `/etc/X11/Xwrapper.config` allowing the service user to start it. `couch/bin/couch-streamtest` proves a stream holds;
 `couch-doctor` marks a stream that took the kiosk down as red (`streams` line, with moonlight's last lines) and warns
 on kiosk restart storms (`services` line).
+
+## Why the X screen follows the stream, and how a stream is quit (2026-11-09)
+
+**Picture filled a quarter of the TV.** The Xorg kiosk has no window manager, so nothing honours a fullscreen request;
+moonlight-qt 6.2.0 (SDL3 through sdl2-compat) then opens a window only as big as the stream, centered: measured on the
+NUC, a 1920x1080 window at +960+540 on a 3840x2160 X screen. The TV's preferred mode is 4K but it offers 4K only at 30 Hz
+(a 60 fps stream on a 30 Hz screen would drop every other frame as well). Fix: the X mode must equal the stream's mode.
+`couch/bin/kiosk` runs `python -m couch.display base` before the launcher (couch.toml `[display] kiosk_mode`, default
+`1920x1080@60`, `preferred` = leave the TV's own mode), so the default stream changes nothing and there is no TV re-sync
+per stream; a stream of another size (`--resolution` in the argv the daemon returns) switches the screen to that exact
+mode for its duration through `xrandr` and back when it ends (`backend.py`, `couch/display.py`). The window is then the
+screen, the decode path is unchanged (the stream is decoded at its own size, the TV scales), and the launcher is
+designed at 1080p. A window manager would also work but is one more package to pin and keeps no guarantee about
+window sizes; matching modes needs nothing installed and is testable with a fake `xrandr`.
+
+**Quit.** moonlight-qt does not ignore SIGTERM: SDL turns it into "Quit event received", it stops its streams within the
+second and then sends `/cancel` to Sunshine, which answers about 3 s later (it ends the app and restores the PC's display
+first). The old 3 s grace SIGKILLed it mid-reply (exit -9). Now `backend.py` sends SIGTERM and waits `TERM_GRACE` (7 s),
+SIGKILLs only as a last resort, and after a kill runs `moonlight-qt quit <host>` so Sunshine's session is ended anyway
+(recorded in `streams.jsonl` as `killed` / `sunshine_quit`). Worst case for a child that ignores everything:
+7 + 2 + 0.5 s to kill and reap it, 5 + 2 + 0.5 s for the Sunshine quit = 17 s (`STOP_BOUND`); a normal quit is the
+host's ~3 s. `couch-streamtest` measures all of it on the real TV (window vs screen, exit code, Sunshine `currentgame`).

@@ -140,9 +140,10 @@ decide_mode() {
 # Kiosk display stack = a plain Xorg server (xinit on tty1, see installer/files/systemd/couch-kiosk.service), NOT the
 # cage Wayland compositor of the first build: cage 0.1.5/wlroots 0.17 segfaults when moonlight-qt's Xwayland window
 # appears (NUC, 2026-11-05/08). xserver-xorg-legacy = the setuid Xorg.wrap a service user needs; libgl1-mesa-dri =
-# glamor on the Intel GPU; xvfb = virtual X for the daemon's headless `moonlight-qt list` (xcb-only AppImage).
+# glamor on the Intel GPU; xvfb = virtual X for the daemon's headless `moonlight-qt list` (xcb-only AppImage);
+# x11-utils = xwininfo/xprop, how the stream window's geometry is checked against the screen (couch-streamtest).
 PACKAGES_BASE=(
-    xserver-xorg-core xserver-xorg-legacy xserver-xorg-input-libinput xinit x11-xserver-utils xvfb libgl1-mesa-dri
+    xserver-xorg-core xserver-xorg-legacy xserver-xorg-input-libinput xinit x11-xserver-utils x11-utils xvfb libgl1-mesa-dri
     libinput-bin
     mesa-va-drivers intel-media-va-driver i965-va-driver vainfo libva-drm2 libegl1 libgl1 libgles2
     python3 python3-venv

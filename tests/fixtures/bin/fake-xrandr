@@ -1,0 +1,37 @@
+#!/bin/sh
+# Fake xrandr for tests ($COUCH_XRANDR): one connected output DP-1 with the modes the NUC's TV offers (4K only at 30 Hz).
+# State (current mode) in $FAKE_XRANDR_STATE ("WxH rate"); every call is logged to $FAKE_XRANDR_LOG; FAKE_XRANDR_FAIL=1
+# makes every non-query call fail.
+state="${FAKE_XRANDR_STATE:?FAKE_XRANDR_STATE}"
+[ -f "$state" ] || echo "3840x2160 30.00" >"$state"
+[ -n "${FAKE_XRANDR_LOG:-}" ] && printf '%s
+' "$*" >>"$FAKE_XRANDR_LOG"
+if [ "${1:-}" = "--query" ]; then
+    read -r cw cr <"$state"
+    echo "Screen 0: minimum 320 x 200, current 3840 x 2160, maximum 16384 x 16384"
+    echo "DP-1 connected primary 3840x2160+0+0 (normal left inverted right x axis y axis) 1872mm x 1053mm"
+    row() {
+        mode="$1"; shift; line=$(printf '   %-12s' "$mode")
+        for r in "$@"; do
+            mark=""; [ "$mode" = "$cw" ] && [ "$r" = "$cr" ] && mark="*"
+            [ "$mode" = "3840x2160" ] && [ "$r" = "30.00" ] && mark="${mark}+"
+            line="$line $r$mark"
+        done
+        echo "$line"
+    }
+    row 3840x2160 30.00 25.00 24.00 29.97 23.98
+    row 2560x1440 59.95
+    row 1920x1080 60.00 50.00 59.94 30.00 25.00 24.00 29.97 23.98
+    row 1920x1080i 60.00 50.00 59.94
+    row 1280x720 60.00 50.00 59.94
+    echo "DP-2 disconnected (normal left inverted right x axis y axis)"
+    exit 0
+fi
+if [ "${FAKE_XRANDR_FAIL:-}" = 1 ]; then echo "X Error of failed request: BadMatch" >&2; exit 1; fi
+# --output DP-1 --mode WxH --rate R
+mode=""; rate=""
+while [ $# -gt 0 ]; do
+    case "$1" in --mode) mode="$2"; shift ;; --rate) rate="$2"; shift ;; esac
+    shift
+done
+echo "$mode $rate" >"$state"

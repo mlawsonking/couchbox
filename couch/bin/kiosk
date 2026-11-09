@@ -28,6 +28,20 @@ if [ -n "${DISPLAY:-}" ] && command -v xset >/dev/null 2>&1; then
     xset s off s noblank dpms 0 0 0 >/dev/null 2>&1 || log "xset failed (screen blanking stays at X defaults)"
 fi
 
+# The X screen's mode must equal the stream's mode: with no window manager nothing honours a fullscreen request, and
+# moonlight-qt then opens a window only as big as the stream, centered (a 1080p stream filled a quarter of the 4K screen,
+# NUC 2026-11-09). couch.display puts the screen on couch.toml [display] kiosk_mode (default 1920x1080@60) before the
+# first frame; a stream of another size switches it for its duration (backend.py). Never fatal: on failure the screen
+# stays on the TV's preferred mode and the launcher still works.
+if [ -n "${DISPLAY:-}" ]; then
+    PY="$COUCH_ROOT/venv/bin/python"; [ -x "$PY" ] || PY=python3
+    if note=$(PYTHONPATH="$COUCH_ROOT/app" timeout 20 "$PY" -m couch.display base 2>&1); then
+        log "display: $note"
+    else
+        log "display: could not set the kiosk mode (${note:-no output})"
+    fi
+fi
+
 fallback() {
     log "starting moonlight-qt fallback GUI ($1)"
     exec "$COUCH_ROOT/bin/moonlight-qt"

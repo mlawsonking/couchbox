@@ -46,6 +46,7 @@ class Config:
     custom_resolution: str = "1920x1080"
     custom_fps: int = 60
     custom_bitrate_kbps: int = 15000
+    kiosk_mode: str = "1920x1080@60"  # [display] kiosk_mode: the X screen's mode ("preferred" = the TV's own, 4K30)
     pair_policy: str = "menu"
     setup_pin: str = ""              # [gamepad] setup_pin: 4 digits; empty = no "Set up a controller" menu item
     nightly_reboot: str = "04:30"
@@ -77,9 +78,10 @@ class Config:
         """The one place a moonlight-qt stream command line is built (launcher and daemon both use it).
         HDR is never requested (moonlight-qt's default is SDR); v1 does not target HDR."""
         res, fps, kbps = self.stream_params(measured_rung)
-        # borderless, not fullscreen: under the bare Xorg kiosk (no window manager) "fullscreen" drew the 1080p
-        # stream 1:1 in a corner of the 4K screen; "borderless" is a screen-sized window the stream is scaled into
-        # (NUC, 2026-11-05).
+        # No window manager runs in the kiosk, so no fullscreen request is honoured: moonlight-qt opens a window the
+        # size of the stream, centered (a 1080p stream drew 1:1 in the middle of the 4K screen, NUC 2026-11-09).
+        # The window fills the TV because couch.display makes the X mode equal the stream's mode (backend.py);
+        # borderless stays so that, with a window manager or a matching mode, the window has no decorations.
         argv = [moonlight, "stream", target, app, "--quit-after", "--display-mode", "borderless",
                 "--resolution", res, "--fps", str(fps), "--bitrate", str(kbps), "--video-decoder", "hardware"]
         codec = self.stream_codec(res)
@@ -190,6 +192,12 @@ def _load(path: str) -> Config:
     if not 500 <= cfg.custom_bitrate_kbps <= 150000:
         problems.append("stream.custom_bitrate_kbps must be 500-150000")
         cfg.custom_bitrate_kbps = 15000
+
+    dp = section("display")
+    cfg.kiosk_mode = get(dp, "kiosk_mode", str, cfg.kiosk_mode).strip()
+    if cfg.kiosk_mode != "preferred" and not re.match(r"^\d{3,5}x\d{3,5}(@\d{2,3})?$", cfg.kiosk_mode):
+        problems.append('display.kiosk_mode must look like 1920x1080@60 (or "preferred")')
+        cfg.kiosk_mode = "1920x1080@60"
 
     pair = section("pair")
     cfg.pair_policy = get(pair, "policy", str, cfg.pair_policy)

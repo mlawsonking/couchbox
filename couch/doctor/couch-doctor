@@ -576,8 +576,8 @@ def check_streams() -> dict:
         return result("streams", RED, f"last stream of {last.get('app')!r} died after {last.get('duration_s')} s - "
                                       f"{how}; earlier: {desc}", detail)
     def failed_stream(s: dict) -> bool:
-        # A negative exit code after a real session is the launcher stopping the child on a quit request
-        # (SIGTERM, then SIGKILL after 3 s): not a failure of the stream.
+        # A negative exit code after a real session is the launcher stopping the child on a quit request that needed
+        # SIGKILL (the launcher then ends the Sunshine session itself): not a failure of the stream.
         code = s.get("exit_code")
         if crashed(s):
             return True

@@ -1,14 +1,25 @@
 #!/bin/sh
 # Fake moonlight-qt CLI for tests: records argv (one line per call) to $MOONLIGHT_ARGV_LOG and behaves per
 # $FAKE_MOONLIGHT_MODE: ok (exit 0) | fail (exit 1) | hang (until killed) | notpaired (exit 1 + message) |
-# slow (exit 0 after 1 s) | list (prints $FAKE_MOONLIGHT_APPS: newline-separated app names).
+# slow (exit 0 after 1 s) | list (prints $FAKE_MOONLIGHT_APPS: newline-separated app names) |
+# graceful (streams until SIGTERM, then, like the real thing, takes $FAKE_TERM_DELAY s (default 0.5) to /cancel
+# on the host and exits 0 - never SIGKILLed unless the caller's grace is shorter than that).
+# `quit <host>` (end the Sunshine session) exits 0 unless $FAKE_QUIT_MODE is fail (exit 1) or hang (ignores SIGTERM).
 # `list` also prints the stderr chatter the real AppImage emits on the NUC (libEGL, Qt), which must never count as apps.
 [ -n "${MOONLIGHT_ARGV_LOG:-}" ] && printf '%s\n' "$*" >>"$MOONLIGHT_ARGV_LOG"
 mode="${FAKE_MOONLIGHT_MODE:-ok}"
+if [ "${1:-}" = quit ]; then
+    case "${FAKE_QUIT_MODE:-ok}" in
+        fail) echo "fake moonlight: quit failed" >&2; exit 1 ;;
+        hang) trap '' TERM; while :; do sleep 1; done ;;
+        *) exit 0 ;;
+    esac
+fi
 # `list` can be given its own behaviour (FAKE_LIST_MODE) so a test can hang the stream but still list apps.
 if [ "${1:-}" = list ] && [ -n "${FAKE_LIST_MODE:-}" ]; then mode="$FAKE_LIST_MODE"; fi
 case "$mode" in
     fail) echo "fake moonlight: stream failed" >&2; exit 1 ;;
+    graceful) trap 'sleep "${FAKE_TERM_DELAY:-0.5}"; exit 0' TERM; while :; do sleep 0.1; done ;;
     hang) trap '' TERM; while :; do sleep 1; done ;;
     notpaired) echo "Error: Computer is not paired" >&2; exit 1 ;;
     slow) sleep 1; exit 0 ;;

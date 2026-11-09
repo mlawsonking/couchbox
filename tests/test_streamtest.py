@@ -53,3 +53,69 @@ def test_help_runs_without_a_daemon():
     cp = subprocess.run([sys.executable, os.path.join(REPO, "couch", "bin", "couch-streamtest"), "--help"],
                         capture_output=True, text=True)
     assert cp.returncode == 0 and "--hold" in cp.stdout and "--app" in cp.stdout
+
+
+XWININFO = """
+xwininfo: Window id: 0x4b6 (the root window) (has no name)
+
+  Root window id: 0x4b6 (the root window) (has no name)
+  Parent window id: 0x0 (none)
+     7 children:
+     0xa00038 (has no name): ()  1920x1080+960+540  +960+540
+     0x800004 "Qt Selection Owner for Moonlight": ()  3x3+0+0  +0+0
+     0xa0002d (has no name): ()  1x1+-10+-10  +-10+-10
+     0x40000d (has no name): ()  3840x2160+0+0  +0+0
+"""
+
+
+def test_parse_children_reads_size_and_position():
+    kids = {k["id"]: k for k in ST.parse_children(XWININFO)}
+    assert kids["0xa00038"] == {"id": "0xa00038", "w": 1920, "h": 1080, "x": 960, "y": 540}
+    assert kids["0xa0002d"]["x"] == -10 and kids["0x40000d"]["w"] == 3840 and len(kids) == 4
+
+
+def test_the_2026_11_09_picture_is_a_quarter_of_the_tv_and_is_caught():
+    """1920x1080 centered on the 4K screen: exactly what the stream looked like before couch.display."""
+    win = {"w": 1920, "h": 1080, "x": 960, "y": 540}
+    assert not ST.fills_screen(win, (3840, 2160))
+    assert ST.fills_screen({"w": 1920, "h": 1080, "x": 0, "y": 0}, (1920, 1080))
+    assert not ST.fills_screen({"w": 1920, "h": 1080, "x": 0, "y": 0}, (3840, 2160))       # top-left corner is no better
+
+
+def test_moonlight_window_is_matched_by_pid_and_must_be_viewable():
+    calls = []
+
+    def fake(argv, timeout=15.0):
+        calls.append(argv)
+        if argv[0] == "pgrep":
+            return "98822 "
+        if argv[:3] == ["xwininfo", "-root", "-children"]:
+            return XWININFO
+        if argv[0] == "xprop":
+            return {"0xa00038": "_NET_WM_PID(CARDINAL) = 98822", "0x40000d": "_NET_WM_PID(CARDINAL) = 95608"}.get(
+                argv[2], "_NET_WM_PID:  not found.")
+        if argv[:2] == ["xwininfo", "-id"]:
+            return "  Map State: IsViewable"
+        return ""
+
+    assert ST.moonlight_window(fake)["id"] == "0xa00038"                    # not the launcher (pid 95608)
+
+    def unmapped(argv, timeout=15.0):
+        return "  Map State: IsUnMapped" if argv[:2] == ["xwininfo", "-id"] else fake(argv, timeout)
+    assert ST.moonlight_window(unmapped) is None
+
+
+def test_moonlight_running_matches_the_versioned_path_the_real_process_has():
+    """The first streamtest grepped .../current/ and could never match the real /opt/couch/moonlight/6.2.0/... process."""
+    import re
+    real = "/opt/couch/moonlight/6.2.0/usr/bin/moonlight stream bobbo.local Desktop --quit-after"
+    assert re.search(ST.MOONLIGHT_RE, real)
+    assert not re.search(ST.MOONLIGHT_RE, "/bin/bash -c pgrep -f /opt/couch/moonlight/6.2.0/usr/bin/moonlight")
+    assert ST.moonlight_running(lambda argv, timeout=15.0: "98822 ") is True
+    assert ST.moonlight_running(lambda argv, timeout=15.0: "") is False
+
+
+def test_screen_size():
+    xr = "Screen 0: minimum 320 x 200, current 1920 x 1080, maximum 16384 x 16384"
+    assert ST.screen_size(lambda argv, timeout=15.0: xr) == (1920, 1080)
+    assert ST.screen_size(lambda argv, timeout=15.0: "") is None

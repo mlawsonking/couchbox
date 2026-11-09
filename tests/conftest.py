@@ -3,6 +3,8 @@ import importlib.util
 import os
 import sys
 
+import pytest
+
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
@@ -19,3 +21,10 @@ def load_script(rel_path: str, name: str):
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_a_real_display(monkeypatch):
+    """couch.display shells out to xrandr: a developer running the suite under a live X session (or on the NUC with
+    DISPLAY set) must never have a test change the real screen. Tests that exercise it point COUCH_XRANDR at the fake."""
+    monkeypatch.setenv("COUCH_XRANDR", "/nonexistent/xrandr")

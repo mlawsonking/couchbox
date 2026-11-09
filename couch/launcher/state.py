@@ -27,7 +27,7 @@ MAX_STRIKES = 3
 RETRY_PAUSE = 2.0            # between failed launches
 HOST_GONE_GRACE = 30.0       # host unreachable this long while streaming -> stop + LOST (moonlight hung)
 PAIR_TIMEOUT = 180.0
-QUIT_TIMEOUT = 5.0           # stop_stream must have reaped the child within this (acceptance 5)
+# stop_stream's bound is backend.STOP_BOUND (SIGTERM grace + SIGKILL + reap + Sunshine quit); a normal quit ~3-4 s.
 
 # Failure reasons -> (kid words, parent detail template). Also rendered into docs/FAILURE-SCREENS.md.
 REASONS = {

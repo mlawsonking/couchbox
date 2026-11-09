@@ -6,20 +6,37 @@ non-blocking: probes run in a background thread and calls return the latest cach
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import secrets
 import signal
 import subprocess
 import threading
 import time
 
-from .. import net
+from .. import display, net
 from .config import Config
+
+log = logging.getLogger("couch.launcher.backend")
 
 MOONLIGHT = os.environ.get("COUCH_MOONLIGHT", "/opt/couch/bin/moonlight-qt")
 STATE_DIR = os.environ.get("COUCH_STATE_DIR", "/var/lib/couch")
 LOG_DIR = os.environ.get("COUCH_LOG_DIR", "/var/log/couch")
 NOT_PAIRED_MARKERS = ("not paired", "isn't paired", "is not paired", "pair with", "unpaired")
+
+# Stopping a stream. moonlight-qt's own quit path IS SIGTERM (SDL turns it into "Quit event received"): it stops the
+# input/audio/video/control streams within the second and then sends /cancel to Sunshine, and Sunshine answers that
+# only after it has torn the session down on the PC (about 3 s on BOBBO: app exit + the display restore). The first
+# build waited 3 s, so SIGKILL landed on a healthy moonlight-qt mid-/cancel (exit -9 in streams.jsonl, 2026-11-09).
+# Hence: SIGTERM with a grace that covers the host's teardown, SIGKILL only as the last resort, and - because a killed
+# client cannot tell Sunshine - `moonlight-qt quit <host>` after any kill. Each step is bounded, so a child that
+# ignores everything is still gone (reaped) within STOP_BOUND seconds, quit included.
+TERM_GRACE = 7.0                 # SIGTERM -> SIGKILL
+KILL_WAIT = 2.0                  # SIGKILL -> reaped
+REAP_WAIT = 0.5                  # final wait() once the group has been signalled
+SUNSHINE_QUIT_TIMEOUT = 5.0      # `moonlight-qt quit <host>` after a forced kill
+STOP_BOUND = TERM_GRACE + KILL_WAIT + REAP_WAIT + SUNSHINE_QUIT_TIMEOUT + KILL_WAIT + REAP_WAIT   # 17 s worst case
 
 
 class Child:
@@ -27,6 +44,7 @@ class Child:
 
     def __init__(self, argv: list[str], log_name: str):
         self.argv = argv
+        self.killed = False          # stop() had to SIGKILL it
         self.started = time.monotonic()
         self.log_path = os.path.join(LOG_DIR, log_name)
         try:
@@ -40,19 +58,23 @@ class Child:
         return self.proc.poll()
 
     def stop(self, timeout: float = 3.0) -> bool:
+        """SIGTERM the group, wait `timeout`, then SIGKILL it (KILL_WAIT), then reap. Always reaps (no zombies).
+        `killed` says whether SIGKILL was needed (the caller then owes Sunshine a `quit`)."""
         if self.proc.poll() is None:
-            for sig, wait in ((signal.SIGTERM, timeout), (signal.SIGKILL, 2.0)):
+            for sig, wait in ((signal.SIGTERM, timeout), (signal.SIGKILL, KILL_WAIT)):
                 try:
                     os.killpg(self.proc.pid, sig)
                 except ProcessLookupError:
                     break
+                if sig == signal.SIGKILL:
+                    self.killed = True
                 try:
                     self.proc.wait(wait)
                     break
                 except subprocess.TimeoutExpired:
                     continue
         try:
-            self.proc.wait(0.5)
+            self.proc.wait(REAP_WAIT)
         except subprocess.TimeoutExpired:
             return False
         if self._log not in (None, subprocess.DEVNULL):
@@ -81,12 +103,14 @@ def _append_stream(entry: dict, path: str) -> None:
         pass
 
 
-def record_stream(app: str, started: float, code: int | None, path: str | None = None) -> None:
+def record_stream(app: str, started: float, code: int | None, path: str | None = None,
+                  extra: dict | None = None) -> None:
     """Append to the stream history couch-doctor shows (last streams, durations, exit codes)."""
     path = path or os.path.join(STATE_DIR, "streams.jsonl")
     entry = {"app": app, "start": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() -
                                                                                      (time.monotonic() - started))),
              "duration_s": round(time.monotonic() - started, 1), "exit_code": code}
+    entry.update(extra or {})
     _append_stream(entry, path)
     try:
         os.unlink(os.path.join(os.path.dirname(path), INFLIGHT))
@@ -178,6 +202,10 @@ class Prober(threading.Thread):
 
 
 class LocalBackend:
+    # class-level defaults: DaemonBackend subclasses this with its own __init__
+    stream_target = ""                           # the host name moonlight-qt was given (for `quit` after a kill)
+    _display_prev: display.Mode | None = None   # what to put the X screen back to when the stream ends
+
     def __init__(self, cfg: Config, prober: Prober | None = None, moonlight: str = MOONLIGHT):
         self.cfg = cfg
         self.moonlight = moonlight
@@ -212,9 +240,32 @@ class LocalBackend:
         return self.cfg.stream_argv(self.moonlight, self.cfg.host, app)
 
     def spawn_stream(self, argv: list[str]) -> Child:
-        """The one place a moonlight-qt stream child is created (LocalBackend and DaemonBackend)."""
+        """The one place a moonlight-qt stream child is created (LocalBackend and DaemonBackend). The X screen is put
+        on the stream's mode first (no window manager: the stream window is only as big as the stream, see
+        couch.display) and restored when the stream ends."""
         mark_inflight(self.stream_app)
-        return Child(argv, "moonlight.log")
+        self.stream_target = argv[argv.index("stream") + 1] if "stream" in argv[:-1] else self.cfg.host
+        self._fit_display(argv)
+        try:
+            return Child(argv, "moonlight.log")
+        except BaseException:
+            self._restore_display()
+            raise
+
+    def _fit_display(self, argv: list[str]) -> None:
+        def opt(name: str) -> str:
+            return argv[argv.index(name) + 1] if name in argv[:-1] else ""
+        m = re.match(r"^(\d+)x(\d+)$", opt("--resolution"))
+        if not m:
+            return
+        fps = int(opt("--fps")) if opt("--fps").isdigit() else 60
+        self._display_prev, note = display.ensure(int(m.group(1)), int(m.group(2)), fps)
+        log.info("stream display: %s", note)
+
+    def _restore_display(self) -> None:
+        prev, self._display_prev = self._display_prev, None
+        if prev is not None:
+            log.info("stream display restored: %s", display.restore(prev))
 
     def start_stream(self, app: str) -> None:
         self.stop_stream()
@@ -231,18 +282,44 @@ class LocalBackend:
         child, self.stream = self.stream, None
         child.stop()
         record_stream(self.stream_app, child.started, code)
+        self._restore_display()
         if code != 0 and any(m in tail for m in NOT_PAIRED_MARKERS):
             from .state import NOT_PAIRED_EXIT
             code = NOT_PAIRED_EXIT
         return ("exited", code)
 
     def stop_stream(self) -> bool:
+        """Quit the stream through moonlight-qt's own quit path (SIGTERM: it ends the stream and /cancels the Sunshine
+        session itself), SIGKILL only if it does not finish within TERM_GRACE, and after a kill end the Sunshine
+        session ourselves. Reaped within STOP_BOUND seconds whatever the child does."""
         if self.stream is None:
             return True
         child, self.stream = self.stream, None
-        ok = child.stop()
-        record_stream(self.stream_app, child.started, child.poll())
+        ok = child.stop(TERM_GRACE)
+        extra: dict = {}
+        if child.killed:
+            extra["killed"] = True
+            extra["sunshine_quit"] = self.sunshine_quit(self.stream_target or self.cfg.host)
+        record_stream(self.stream_app, child.started, child.poll(), extra=extra)
+        self._restore_display()
         return ok
+
+    def sunshine_quit(self, target: str) -> str:
+        """`moonlight-qt quit <host>`: ends the running app (the session) on Sunshine. Used when moonlight-qt had to
+        be killed and so never sent /cancel itself. Bounded; returns "ok", "rc=N", "timeout" or "error: ..."."""
+        try:
+            q = Child([self.moonlight, "quit", target], "moonlight.log")
+        except OSError as exc:
+            log.warning("moonlight-qt quit %s could not start: %s", target, exc)
+            return f"error: {exc}"
+        try:
+            rc = q.proc.wait(SUNSHINE_QUIT_TIMEOUT)
+            result = "ok" if rc == 0 else f"rc={rc}"
+        except subprocess.TimeoutExpired:
+            result = "timeout"
+        q.stop(0.0)
+        log.info("moonlight-qt quit %s after a forced kill: %s", target, result)
+        return result
 
     # -- pairing
     def pair_start(self) -> str:

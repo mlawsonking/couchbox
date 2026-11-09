@@ -8,7 +8,10 @@ then for HOLD seconds checks every second that
   1. the moonlight-qt child is still running (the launcher's /var/lib/couch/streaming flag stays),
   2. couch-kiosk.service kept its main PID and restart count (the X server / launcher did not die under the stream),
   3. the launcher never logged "-> LOST" or came back up ("launcher up" = it was restarted),
-then sends /quit and checks the launcher returned to IDLE and no moonlight-qt process is left (TESTPLAN item 5).
+4. (after 10 s, when x11-utils is installed) the moonlight-qt window is exactly the X screen: same size, at +0+0
+   (no window manager runs, so a screen of another size than the stream shows the picture 1:1 in the middle),
+then sends /quit and checks the launcher returned to IDLE, no moonlight-qt process is left, moonlight-qt exited 0 (not
+SIGKILLed: exit -9) and Sunshine on the PC no longer reports a running session (TESTPLAN item 5).
 Exit 0 = PASS, 1 = FAIL (with the reason, the moonlight.log tail and the kiosk journal), 2 = could not run.
 
 The crash class this exists for (2026-11-05/08): every stream died about a second in because the kiosk compositor
@@ -21,6 +24,8 @@ import argparse
 import http.client
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -89,9 +94,69 @@ def tail(text: str, n: int = 15) -> list[str]:
     return [ln for ln in text.splitlines() if ln.strip()][-n:]
 
 
+# The real process is /opt/couch/moonlight/<version>/usr/bin/moonlight (AppRun execs the versioned path, not `current`):
+# the first version of this check grepped ".../current/" and so could never match - "no moonlight left" was vacuous.
+# Anchored on the command's start so a shell whose command line merely mentions the path never counts.
+MOONLIGHT_RE = r"^/opt/couch/moonlight/[^ ]+/usr/bin/moonlight( |$)"
+
+
+def moonlight_pids(runner=run) -> list[int]:
+    return [int(x) for x in runner(["pgrep", "-f", MOONLIGHT_RE]).split() if x.isdigit()]
+
+
 def moonlight_running(runner=run) -> bool:
-    # anchored on the command's start so a shell whose command line merely mentions the path never counts
-    return bool(runner(["pgrep", "-f", "^/opt/couch/moonlight/current/"]).strip())
+    return bool(moonlight_pids(runner))
+
+
+# ---- what is on the TV: the X screen vs the stream window (no window manager runs: nothing resizes a window for us)
+SCREEN_RE = re.compile(r"current (\d+) x (\d+)")
+CHILD_RE = re.compile(r"^\s+(0x[0-9a-f]+) .*?\s(\d+)x(\d+)\+(-?\d+)\+(-?\d+)\s+\+-?\d+\+-?\d+")
+PID_RE = re.compile(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)")
+
+
+def screen_size(runner=run) -> tuple[int, int] | None:
+    m = SCREEN_RE.search(runner(["xrandr", "--query"]))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def parse_children(text: str) -> list[dict]:
+    """Top-level windows from `xwininfo -root -children`: id, size and position."""
+    out = []
+    for line in text.splitlines():
+        m = CHILD_RE.match(line)
+        if m:
+            out.append({"id": m.group(1), "w": int(m.group(2)), "h": int(m.group(3)),
+                        "x": int(m.group(4)), "y": int(m.group(5))})
+    return out
+
+
+def moonlight_window(runner=run) -> dict | None:
+    """The mapped top-level window owned by a moonlight-qt process (matched by _NET_WM_PID), or None."""
+    pids = set(moonlight_pids(runner))
+    for k in parse_children(runner(["xwininfo", "-root", "-children"])):
+        m = PID_RE.search(runner(["xprop", "-id", k["id"], "_NET_WM_PID"]))
+        if m and int(m.group(1)) in pids and "IsViewable" in runner(["xwininfo", "-id", k["id"]]):
+            return k
+    return None
+
+
+def fills_screen(win: dict, screen: tuple[int, int]) -> bool:
+    return (win["w"], win["h"], win["x"], win["y"]) == (screen[0], screen[1], 0, 0)
+
+
+def sunshine_current_game(ip: str, timeout: float = 4.0) -> int | None:
+    """Sunshine's unauthenticated GET /serverinfo (HTTP 47989, the same port the launcher probes): <currentgame> is 0
+    when no session is running. None = unreachable / not understood (unverified, not a failure)."""
+    try:
+        c = http.client.HTTPConnection(ip, 47989, timeout=timeout)
+        try:
+            c.request("GET", "/serverinfo")
+            m = re.search(r"<currentgame>(\d+)</currentgame>", c.getresponse().read().decode("utf-8", "replace"))
+        finally:
+            c.close()
+    except (OSError, http.client.HTTPException):
+        return None
+    return int(m.group(1)) if m else None
 
 
 def last_stream(path: str) -> dict:
@@ -148,6 +213,7 @@ def main(argv=None) -> int:
                     help="seconds allowed for wake + connect + first frame (default 90; acceptance: asleep <= 90)")
     ap.add_argument("--json", action="store_true", help="machine-readable record")
     a = ap.parse_args(argv)
+    os.environ.setdefault("DISPLAY", ":0")                 # the kiosk's X server takes no auth: xrandr/xwininfo work over SSH
     rec: dict = {"app": a.app, "hold_s": a.hold, "result": "ERROR", "events": []}
     flag = os.path.join(STATE, "streaming")
     ml_log, la_log = os.path.join(LOGS, "moonlight.log"), os.path.join(LOGS, "launcher.log")
@@ -231,6 +297,29 @@ def main(argv=None) -> int:
     held = time.time() - started_at
     ev(f"held {held:.0f} s: kiosk pid stable, stream child alive, launcher quiet")
 
+    # Phase 2b: the picture must fill the TV. xwininfo/xprop come from x11-utils (the installer adds it); without
+    # them the check is reported as skipped, never as passed.
+    geometry = "not checked (xwininfo/xprop missing: apt install x11-utils)"
+    if shutil.which("xwininfo") and shutil.which("xprop"):
+        scr = screen_size()
+        win = None
+        for _ in range(5):                                  # the window appears ~6 s after the launch request
+            win = moonlight_window()
+            if win:
+                break
+            time.sleep(1.0)
+        rec["screen"], rec["window"] = scr, win
+        if scr is None or win is None:
+            evidence(t0, ml_off)
+            return finish("FAIL", f"could not measure the picture: screen {scr}, moonlight window {win}")
+        geometry = f"window {win['w']}x{win['h']}+{win['x']}+{win['y']} on a {scr[0]}x{scr[1]} screen"
+        ev(geometry)
+        if not fills_screen(win, scr):
+            api("POST", "/quit")
+            evidence(t0, ml_off)
+            return finish("FAIL", f"the stream does not fill the TV: {geometry} (no window manager runs, so the X "
+                                  f"mode must equal the stream's mode; see couch/display.py)")
+
     # Phase 3: quit and confirm the return to the launcher. A daemon-driven quit goes through Machine.force_quit,
     # which changes state outside tick() and so writes NO "STREAMING -> IDLE" log line: the proof is the streaming
     # flag gone + a new streams.jsonl entry (the launcher reaped the child) + no moonlight-qt process left.
@@ -239,7 +328,7 @@ def main(argv=None) -> int:
     api("POST", "/quit")
     q0 = time.time()
     back = False
-    while time.time() - q0 < 15:
+    while time.time() - q0 < 25:                       # launcher polls /pending each second + backend.STOP_BOUND (17 s)
         time.sleep(0.5)
         if not os.path.exists(flag) and size(streams_path) > streams_off:
             back = True
@@ -249,17 +338,36 @@ def main(argv=None) -> int:
     rec["moonlight_left_running"] = moonlight_running()
     rec["stream_record"] = last_stream(streams_path) if back else {}
     if not back:
-        return finish("FAIL", f"after /quit the stream flag or the launcher's stream record did not settle within 15 s "
+        return finish("FAIL", f"after /quit the stream flag or the launcher's stream record did not settle within 25 s "
                               f"(held {held:.0f} s first)")
     if rec["kiosk_after"].get("MainPID") != base.get("MainPID"):
         return finish("FAIL", "the kiosk restarted when the stream was quit")
     if rec["moonlight_left_running"]:
         return finish("FAIL", f"a moonlight-qt process is still running {rec['quit_s']} s after /quit")
-    code = rec["stream_record"].get("exit_code")
-    how = ("moonlight-qt needed SIGKILL after the 3 s SIGTERM grace" if isinstance(code, int) and code < 0
-           else f"moonlight-qt exit {code}")
-    return finish("PASS", f"{a.app!r} streamed for {held:.0f} s on kiosk pid {base.get('MainPID')} (0 restarts), "
-                          f"quit returned to the launcher in {rec['quit_s']} s ({how}), no moonlight-qt left")
+    srec = rec["stream_record"]
+    code = srec.get("exit_code")
+    if code != 0 or srec.get("killed"):
+        return finish("FAIL", f"quit was not graceful: moonlight-qt exit {code}"
+                              f"{' (SIGKILLed after the SIGTERM grace)' if srec.get('killed') else ''}, "
+                              f"Sunshine quit after the kill: {srec.get('sunshine_quit', 'n/a')}; returned in "
+                              f"{rec['quit_s']} s")
+    # Sunshine on the PC: no session left (its /cancel runs on the host a few seconds after the client asks).
+    ip = st.get("ip")
+    game = None
+    if ip:
+        for _ in range(10):
+            game = sunshine_current_game(ip)
+            if game == 0 or game is None:
+                break
+            time.sleep(1.0)
+    rec["sunshine_currentgame"] = game
+    if game:
+        return finish("FAIL", f"Sunshine on {st.get('host')} still reports a running session (currentgame={game}) "
+                              f"10 s after the quit")
+    sun = ("Sunshine reports no session" if game == 0 else "Sunshine session state could not be read (unverified)")
+    return finish("PASS", f"{a.app!r} streamed for {held:.0f} s on kiosk pid {base.get('MainPID')} (0 restarts); {geometry}; "
+                          f"quit returned to the launcher in {rec['quit_s']} s with moonlight-qt exit 0 (no SIGKILL), "
+                          f"no moonlight-qt left; {sun}")
 
 
 if __name__ == "__main__":

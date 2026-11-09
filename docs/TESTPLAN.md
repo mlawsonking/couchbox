@@ -50,6 +50,11 @@ Date: ________  NUC model: ________  TV: ________  Workstation: ________
 2. Start a game again; press Moonlight's quit combo (Start + Back + LB + RB): launcher within 5 s.
 3. Start a game again; hold the Xbox button 3 s: launcher within 5 s.
 4. **[SSH]** `pgrep -fa moonlight` prints nothing after each quit.
+5. **[SSH]** The last line of `/var/lib/couch/streams.jsonl` has `"exit_code": 0` and no `"killed"` (a quit that needed
+   SIGKILL is exit -9 with `"sunshine_quit"`; the launcher has still ended the session on the PC, but that is a defect to
+   report). Sunshine on the PC shows no running app. Worst case if moonlight-qt hangs: the launcher is back within 17 s.
+6. While streaming, the picture fills the whole TV (not a window in the middle): `couch-streamtest` checks
+   `xwininfo` geometry == X screen, or look.
 
 [ ] PASS  [ ] FAIL  notes: __________________
 
